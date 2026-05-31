@@ -1,2 +1,2 @@
 flet==0.21.2
-reportlab==4.1.0
+fpdf==1.7.2

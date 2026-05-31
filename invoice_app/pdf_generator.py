@@ -1,89 +1,17 @@
-
-"""
-PDF invoice generator (layout updates):
-- Header: Tax Invoice & logo centered inside their cells
-- Meta: UDYAM moved to right column below Email; then Challan No/Date row
-- Spacers before blocks to match visual rhythm
-- Two-column blocks: 'Invoice To' (left) and 'Ship To' (right) with Name, Address, GSTIN
-- Items header: white background, blue captions; numeric columns right
-- Totals computed at invoice level; Amount in words uses rounded total
-- Bank Details: line-by-line (Account number, Branch Name, IFSC, Branch Address) + Authorised Signatory on right
-- Rupee (₹) rendered reliably via Unicode TTF registration
-"""
 import sys
+import os
 from pathlib import Path
 from typing import Optional
-from reportlab.lib.pagesizes import A4
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib.units import mm
-from reportlab.lib import colors
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Image, Spacer
-from reportlab.lib.enums import TA_LEFT, TA_CENTER
-from reportlab.lib.utils import ImageReader
-from reportlab.pdfbase import pdfmetrics
-from reportlab.pdfbase.ttfonts import TTFont
+from fpdf import FPDF
+import decimal
 
 from .models import Invoice, ConfigManager
 
-# Determine output directory based on whether running as exe or from source
 if hasattr(sys, '_MEIPASS'):
-    # Running as PyInstaller exe - use exe directory
     exe_dir = Path(sys.executable).parent
     OUTPUT_DIR = exe_dir / "data" / "invoices"
 else:
-    # Running from source - use project data folder
     OUTPUT_DIR = Path(__file__).parent.parent / "data" / "invoices"
-
-# ---- Widths / colors --------------------------------------------------------
-LEFT_MARGIN_PT  = 8 * mm
-RIGHT_MARGIN_PT = 8 * mm
-PAGE_WIDTH_PT   = A4[0]
-CONTENT_WIDTH   = PAGE_WIDTH_PT - (LEFT_MARGIN_PT + RIGHT_MARGIN_PT)  # ~6.5 inch with 8mm margins
-
-BLUE  = colors.HexColor('#0047AB')
-WHITE = colors.white
-
-def base_table_style(line_width=1, padding=4) -> TableStyle:
-    """BOX + INNERGRID for cleaner borders without double-thick edges."""
-    return TableStyle([
-        ('BOX',           (0, 0), (-1, -1), line_width, colors.black),
-        ('INNERGRID',     (0, 0), (-1, -1), line_width, colors.black),
-        ('VALIGN',        (0, 0), (-1, -1), 'TOP'),
-        ('LEFTPADDING',   (0, 0), (-1, -1), padding),
-        ('RIGHTPADDING',  (0, 0), (-1, -1), padding),
-        ('TOPPADDING',    (0, 0), (-1, -1), padding),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), padding),
-    ])
-
-def _register_app_font() -> str:
-    """
-    Register a Unicode TTF that includes U+20B9 (₹).
-    Reads 'font_path' from config.json; if missing/invalid, tries common system fonts.
-    """
-    cfg = ConfigManager()
-    candidates = []
-    fp = cfg.get('font_path', '')
-    if fp:
-        candidates.append(fp)
-    candidates += [
-        r"C:\Windows\Fonts\DejaVuSans.ttf",
-        r"C:\Windows\Fonts\NotoSans-Regular.ttf",
-        r"C:\Windows\Fonts\ArialUni.ttf",
-        r"C:\Windows\Fonts\Arial.ttf",
-        r"C:/Windows/Fonts/DejaVuSans.ttf",
-        r"C:/Windows/Fonts/NotoSans-Regular.ttf",
-        r"/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-        r"/Library/Fonts/Arial Unicode.ttf",
-    ]
-    for p in candidates:
-        if p and Path(p).exists():
-            try:
-                pdfmetrics.registerFont(TTFont("AppFont", p))
-                return "AppFont"
-            except Exception:
-                continue
-    # Fallback: try Helvetica with rupee substitution
-    return "Helvetica"
 
 def amount_in_words_inr(amount: float) -> str:
     NUM_WORDS_1_TO_19 = [
@@ -113,10 +41,13 @@ def amount_in_words_inr(amount: float) -> str:
     words = " ".join(parts) if parts else "Zero"
     return f"Rupees {words} Only" if not paise else f"Rupees {words} and {paise} Paise Only"
 
+class InvoicePDF(FPDF):
+    def footer(self):
+        # We handle footers explicitly in the generation loop, so pass
+        pass
+
 def generate_pdf(invoice: Invoice, logo_path: Optional[str] = None) -> str:
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-
-    app_font = _register_app_font()
 
     safe_invoice_number = (
         invoice.invoice_number.replace('/', '-').replace('\\', '-').replace(':', '-')
@@ -124,345 +55,243 @@ def generate_pdf(invoice: Invoice, logo_path: Optional[str] = None) -> str:
     pdf_filename = f"{safe_invoice_number}.pdf"
     pdf_path = OUTPUT_DIR / pdf_filename
 
-    doc = SimpleDocTemplate(
-        str(pdf_path), pagesize=A4,
-        topMargin=8*mm, bottomMargin=8*mm,
-        leftMargin=LEFT_MARGIN_PT, rightMargin=RIGHT_MARGIN_PT
-    )
-    story = []
-    styles = getSampleStyleSheet()
+    # Replace ₹ with Rs. since fpdf core fonts are iso-8859-1
+    rs = "Rs."
 
-    # Styles (explicit font names; never None)
-    title_style = ParagraphStyle('Title', parent=styles['Normal'],
-                                 fontSize=12, leading=14,
-                                 fontName=app_font, textColor=colors.black,
-                                 alignment=TA_CENTER)
-    label_style = ParagraphStyle('Label', parent=styles['Normal'],
-                                 fontSize=8, leading=10,
-                                 fontName=app_font, textColor=colors.black)
-    value_style = ParagraphStyle('Value', parent=styles['Normal'],
-                                 fontSize=8, leading=10,
-                                 fontName=app_font, textColor=colors.black)
-    small_center = ParagraphStyle('SmallCenter', parent=styles['Normal'],
-                                  fontSize=8, leading=10,
-                                  fontName=app_font, textColor=colors.black,
-                                  alignment=TA_CENTER)
-
-    # ===== Calculate totals (for all items, for summary display)
+    # Subtotals
     subtotal    = sum(it.total_price for it in invoice.line_items)
     sgst        = sum(it.sgst_amount for it in invoice.line_items)
     cgst        = sum(it.cgst_amount for it in invoice.line_items)
     sgst_eff    = (sgst / subtotal * 100.0) if subtotal else 0.0
     cgst_eff    = (cgst / subtotal * 100.0) if subtotal else 0.0
     total       = subtotal + sgst + cgst
-    import decimal
     round_total = float(decimal.Decimal(str(total)).quantize(decimal.Decimal('1'), rounding=decimal.ROUND_HALF_UP))
 
-    # ===== Pagination: split items into pages (max 5 per page)
-    items_per_page = 5
-    item_pages = []
-    for i in range(0, len(invoice.line_items), items_per_page):
-        item_pages.append(invoice.line_items[i:i+items_per_page])
+    pdf = InvoicePDF('P', 'mm', 'A4')
+    pdf.set_auto_page_break(auto=True, margin=15)
+    pdf.add_page()
+    pdf.set_margins(8, 8, 8)
     
-    if not item_pages:
-        item_pages = [[]]  # At least one page, even if empty
+    page_w = pdf.w - 16  # total page width minus 8mm left and right margins
 
-    # ===== Helper function to build header section
-    def build_header():
-        header_row = [Paragraph("<b>Tax Invoice</b>", title_style)]
+    def txt(t):
+        if not t: return ""
+        # Filter unprintable characters if any
+        return str(t).encode('iso-8859-1', 'ignore').decode('iso-8859-1')
 
-        if not logo_path:
-            default_logo = Path(__file__).parent / "logo.png"
-            if default_logo.exists():
-                logo_path_use = str(default_logo)
-            else:
-                logo_path_use = None
+    # Draw header
+    pdf.set_font('Arial', 'B', 14)
+    # Tax Invoice text
+    pdf.cell(page_w * 0.75, 10, 'Tax Invoice', border=1, align='C')
+    # Logo Box
+    x_logo_box = pdf.get_x()
+    y_logo_box = pdf.get_y()
+    pdf.cell(page_w * 0.25, 10, '', border=1, ln=1, align='C')
+    
+    if logo_path and os.path.exists(logo_path):
+        try:
+            # fpdf handles jpg, png natively
+            pdf.image(logo_path, x=x_logo_box + 2, y=y_logo_box + 1, w=page_w * 0.25 - 4, h=8)
+        except Exception:
+            pass
+
+    # Meta
+    # Two columns:
+    col1_w = page_w / 2
+    col2_w = page_w / 2
+    
+    pdf.set_font('Arial', 'B', 9)
+    pdf.cell(28, 6, "Company Name:", border="L")
+    pdf.set_font('Arial', '', 9)
+    pdf.cell(col1_w - 28, 6, txt(invoice.company_name))
+    
+    pdf.set_font('Arial', 'B', 9)
+    pdf.cell(28, 6, "Invoice No:", border="L")
+    pdf.set_font('Arial', '', 9)
+    pdf.cell(col2_w - 28, 6, txt(invoice.invoice_number), border="R", ln=1)
+    
+    pdf.set_font('Arial', 'B', 9)
+    pdf.cell(28, 6, "ADDRESS:", border="L")
+    pdf.set_font('Arial', '', 9)
+    pdf.cell(col1_w - 28, 6, txt(invoice.company_address))
+    
+    pdf.set_font('Arial', 'B', 9)
+    pdf.cell(28, 6, "Invoice Date:", border="L")
+    pdf.set_font('Arial', '', 9)
+    pdf.cell(col2_w - 28, 6, txt(invoice.invoice_date), border="R", ln=1)
+
+    left_labels = ['GSTIN:', 'Phone:', 'Email:', 'UDYAM REG NO:']
+    left_values = [invoice.company_gstin, invoice.company_phone, invoice.company_email, invoice.udyam_registration]
+    
+    right_fields = []
+    if invoice.po_number: right_fields.append(('Po No:', invoice.po_number))
+    if invoice.po_date: right_fields.append(('Po Date:', invoice.po_date))
+    if invoice.challan_number: right_fields.append(('Challan No:', invoice.challan_number))
+    if invoice.challan_date: right_fields.append(('Challan Date:', invoice.challan_date))
+
+    for i in range(len(left_labels)):
+        pdf.set_font('Arial', 'B', 9)
+        # We give a fixed width to label, then rest to value
+        pdf.cell(30, 6, left_labels[i], border="L")
+        pdf.set_font('Arial', '', 9)
+        pdf.cell(col1_w - 30, 6, txt(left_values[i]))
+        
+        pdf.set_font('Arial', 'B', 9)
+        if i < len(right_fields):
+            pdf.cell(30, 6, right_fields[i][0], border="L")
+            pdf.set_font('Arial', '', 9)
+            pdf.cell(col2_w - 30, 6, txt(right_fields[i][1]), border="R", ln=1)
         else:
-            logo_path_use = logo_path
-
-        if logo_path_use and Path(logo_path_use).exists():
-            try:
-                ir = ImageReader(logo_path_use)
-                iw, ih = ir.getSize()
-                target_w_pt = 1.5 * 72
-                scale = target_w_pt / float(iw)
-                logo = Image(logo_path_use, width=target_w_pt, height=ih * scale)
-                header_row.append(logo)
-            except Exception:
-                header_row.append("")
-        else:
-            header_row.append("")
-
-        header_table = Table(
-            [header_row],
-            colWidths=[CONTENT_WIDTH * (5.0/6.5), CONTENT_WIDTH * (1.5/6.5)],
-            hAlign='LEFT'
-        )
-        header_table.setStyle(TableStyle(base_table_style().getCommands() + [
-            ('ALIGN', (0, 0), (0, 0), 'CENTER'),
-            ('ALIGN', (1, 0), (1, 0), 'CENTER'),
-        ]))
-        return header_table
-
-    # ===== Helper function to build meta section
-    def build_meta():
-        def L(label, value):
-            return Paragraph(f"<b>{label}</b> {value}", value_style)
-
-        meta_rows = [
-            [L('Company Name:', invoice.company_name), L('Invoice No:', invoice.invoice_number)],
-            [L('ADDRESS:', invoice.company_address), L('Invoice Date:', invoice.invoice_date)],
-        ]
-        
-        # Build right-side optional fields list (only those with values)
-        optional_right_fields = []
-        if invoice.po_number and invoice.po_number.strip():
-            optional_right_fields.append(L('Po No:', invoice.po_number))
-        if invoice.po_date and invoice.po_date.strip():
-            optional_right_fields.append(L('Po Date:', invoice.po_date))
-        if invoice.challan_number and invoice.challan_number.strip():
-            optional_right_fields.append(L('Challan No:', invoice.challan_number))
-        if invoice.challan_date and invoice.challan_date.strip():
-            optional_right_fields.append(L('Challan Date:', invoice.challan_date))
-        
-        # Left-side labels for optional fields section
-        left_labels = ['GSTIN:', 'Phone:', 'Email:', 'UDYAM REGISTRATION NUMBER:']
-        left_values = [invoice.company_gstin, invoice.company_phone, invoice.company_email, invoice.udyam_registration]
-        
-        # Add rows with left labels and dynamic right-side optional fields
-        for i in range(len(left_labels)):
-            right_content = optional_right_fields[i] if i < len(optional_right_fields) else Paragraph("", value_style)
-            meta_rows.append([L(left_labels[i], left_values[i]), right_content])
-        
-        meta_table = Table(meta_rows, colWidths=[CONTENT_WIDTH/2, CONTENT_WIDTH/2], hAlign='LEFT')
-        meta_table.setStyle(base_table_style())
-        meta_table.setStyle(TableStyle([('ALIGN', (0,0), (-1,-1), 'LEFT')]))
-        return meta_table
-
-    # ===== Helper function to build additional info section
-    def build_additional_info():
-        line1 = getattr(invoice, 'additional_info_line1', '').strip()
-        line2 = getattr(invoice, 'additional_info_line2', '').strip()
-        if not (line1 or line2):
-            return None
-        
-        additional_rows = [
-            [Paragraph('<b>Additional Information</b>', label_style)],
-        ]
+            pdf.cell(30, 6, "", border="L")
+            pdf.cell(col2_w - 30, 6, "", border="R", ln=1)
+    
+    # Close border of meta box
+    pdf.cell(page_w, 0, "", border="T", ln=1)
+    
+    # Space
+    pdf.ln(2)
+    
+    # Additional Info
+    line1 = getattr(invoice, 'additional_info_line1', '').strip()
+    line2 = getattr(invoice, 'additional_info_line2', '').strip()
+    if line1 or line2:
+        pdf.set_font('Arial', 'B', 9)
+        pdf.cell(page_w, 6, "Additional Information", border="LRT", ln=1)
+        pdf.set_font('Arial', '', 9)
         if line1:
-            additional_rows.append([Paragraph(line1, value_style)])
+            pdf.cell(page_w, 6, txt(line1), border="LR", ln=1)
         if line2:
-            additional_rows.append([Paragraph(line2, value_style)])
-        additional_table = Table(additional_rows, colWidths=[CONTENT_WIDTH], hAlign='LEFT')
-        additional_table.setStyle(base_table_style())
-        return additional_table
+            pdf.cell(page_w, 6, txt(line2), border="LR", ln=1)
+        pdf.cell(page_w, 0, "", border="T", ln=1)
+        pdf.ln(2)
 
-    # ===== Helper function to build two-column section (Invoice To / Ship To)
-    def build_customer_section():
-        inv_to_name  = Paragraph(invoice.customer_name or "", value_style)
-        inv_to_addr  = Paragraph(invoice.customer_address or "", value_style)
-        inv_to_gstin = Paragraph(f"GSTIN: {invoice.customer_gstin or ''}", value_style)
+    # Customer Section
+    pdf.set_font('Arial', 'B', 9)
+    pdf.cell(col1_w, 6, "Invoice To", border="LRT")
+    pdf.cell(col2_w, 6, "Ship To", border="LRT", ln=1)
+    
+    pdf.set_font('Arial', '', 9)
+    inv_name = txt(invoice.customer_name)
+    ship_name = txt(getattr(invoice, 'ship_to_name', ''))
+    pdf.cell(col1_w, 6, inv_name, border="LR")
+    pdf.cell(col2_w, 6, ship_name, border="LR", ln=1)
+    
+    inv_addr = txt(invoice.customer_address)
+    ship_addr = txt(getattr(invoice, 'ship_to_address', ''))
+    pdf.cell(col1_w, 6, inv_addr, border="LR")
+    pdf.cell(col2_w, 6, ship_addr, border="LR", ln=1)
 
-        ship_to_name  = Paragraph(getattr(invoice, 'ship_to_name', '') or "", value_style)
-        ship_to_addr  = Paragraph(getattr(invoice, 'ship_to_address', '') or "", value_style)
-        ship_to_gstin = Paragraph(f"GSTIN: {getattr(invoice, 'ship_to_gstin', '') or ''}", value_style)
+    inv_gstin = txt(f"GSTIN: {invoice.customer_gstin or ''}")
+    ship_gstin = txt(f"GSTIN: {getattr(invoice, 'ship_to_gstin', '') or ''}")
+    pdf.cell(col1_w, 6, inv_gstin, border="LRB")
+    pdf.cell(col2_w, 6, ship_gstin, border="LRB", ln=1)
+    pdf.ln(2)
 
-        two_col_rows = [
-            [Paragraph('<b>Invoice To</b>', label_style), Paragraph('<b>Ship To</b>', label_style)],
-            [inv_to_name,  ship_to_name],
-            [inv_to_addr,  ship_to_addr],
-            [inv_to_gstin, ship_to_gstin],
-        ]
-        two_col_table = Table(two_col_rows, colWidths=[CONTENT_WIDTH/2, CONTENT_WIDTH/2], hAlign='LEFT')
-        two_col_table.setStyle(base_table_style())
-        two_col_table.setStyle(TableStyle([('ALIGN', (0,0), (-1,-1), 'LEFT')]))
-        return two_col_table
+    # Items table header
+    pdf.set_fill_color(255, 255, 255)
+    pdf.set_text_color(0, 71, 171) # BLUE
+    pdf.set_font('Arial', 'B', 9)
+    
+    w_desc = page_w * (2.30/6.5)
+    w_hsn = page_w * (0.90/6.5)
+    w_qty = page_w * (0.70/6.5)
+    w_uom = page_w * (0.70/6.5)
+    w_unit = page_w * (0.95/6.5)
+    w_tot = page_w * (0.95/6.5)
 
-    # ===== Helper function to build items table for a specific page
-    def build_items_table(page_items):
-        items_header = ['Description', 'HSN', 'Qty', 'UOM', 'Unit price', 'Total price']
-        items_data = [items_header]
-        for it in page_items:
-            items_data.append([
-                Paragraph(it.description, value_style),
-                Paragraph(it.hsn, value_style),
-                Paragraph(f"{it.qty:.2f}", value_style),
-                Paragraph(it.uom, value_style),
-                Paragraph(f"₹{it.unit_price:.2f}", value_style),
-                Paragraph(f"₹{it.total_price:.2f}", value_style),
-            ])
+    pdf.cell(w_desc, 8, "Description", border=1, align='C', fill=True)
+    pdf.cell(w_hsn, 8, "HSN", border=1, align='C', fill=True)
+    pdf.cell(w_qty, 8, "Qty", border=1, align='C', fill=True)
+    pdf.cell(w_uom, 8, "UOM", border=1, align='C', fill=True)
+    pdf.cell(w_unit, 8, "Unit price", border=1, align='C', fill=True)
+    pdf.cell(w_tot, 8, "Total price", border=1, align='C', fill=True, ln=1)
 
-        items_table = Table(
-            items_data,
-            colWidths=[
-                CONTENT_WIDTH * (2.30/6.5),
-                CONTENT_WIDTH * (0.90/6.5),
-                CONTENT_WIDTH * (0.70/6.5),
-                CONTENT_WIDTH * (0.70/6.5),
-                CONTENT_WIDTH * (0.95/6.5),
-                CONTENT_WIDTH * (0.95/6.5),
-            ],
-            rowHeights=[None] + [18] * len(page_items),  # Header auto, data rows 18pt
-            hAlign='LEFT'
-        )
-        items_table.setStyle(TableStyle(base_table_style().getCommands() + [
-            ('BACKGROUND', (0, 0), (-1, 0), WHITE),
-            ('TEXTCOLOR',  (0, 0), (-1, 0), BLUE),
-            ('FONTNAME',   (0, 0), (-1, 0), app_font),
-            ('FONTSIZE',   (0, 0), (-1, 0), 9),
-            ('ALIGN',      (0, 0), (-1, 0), 'CENTER'),
-            ('ALIGN',      (0, 1), (0, -1), 'LEFT'),
-            ('ALIGN',      (1, 1), (-1, -1), 'RIGHT'),
-            ('TOPPADDING',    (0, 0), (-1, 0), 6),
-            ('BOTTOMPADDING', (0, 0), (-1, 0), 6),
-            ('TOPPADDING',    (0, 1), (-1, -1), 2),
-            ('BOTTOMPADDING', (0, 1), (-1, -1), 2),
-            ('VALIGN',       (0, 1), (-1, -1), 'MIDDLE'),
-        ]))
-        return items_table
+    # Items
+    pdf.set_text_color(0, 0, 0)
+    pdf.set_font('Arial', '', 9)
+    for it in invoice.line_items:
+        pdf.cell(w_desc, 6, txt(it.description), border="LR")
+        pdf.cell(w_hsn, 6, txt(it.hsn), border="LR", align="R")
+        pdf.cell(w_qty, 6, f"{it.qty:.2f}", border="LR", align="R")
+        pdf.cell(w_uom, 6, txt(it.uom), border="LR", align="R")
+        pdf.cell(w_unit, 6, f"{rs}{it.unit_price:.2f}", border="LR", align="R")
+        pdf.cell(w_tot, 6, f"{rs}{it.total_price:.2f}", border="LR", align="R", ln=1)
+    
+    # Close items table bottom border
+    pdf.cell(page_w, 0, "", border="T", ln=1)
+    
+    # Totals
+    w_tot_label = page_w * (4.5/6.5)
+    w_tot_val = page_w * (2.0/6.5)
 
-    # ===== Helper function to build totals section (only on last page)
-    def build_totals_section():
-        totals_rows = [
-            [Paragraph('<b>Subtotal</b>', label_style),                       Paragraph(f"₹{subtotal:.2f}", value_style)],
-            [Paragraph(f'<b>SGST ({sgst_eff:.2f}%)</b>', label_style), Paragraph(f"₹{sgst:.2f}", value_style)],
-            [Paragraph(f'<b>CGST ({cgst_eff:.2f}%)</b>', label_style), Paragraph(f"₹{cgst:.2f}", value_style)],
-            [Paragraph('<b>Total Amount in INR</b>', label_style),            Paragraph(f"₹{total:.2f}", value_style)],
-            [Paragraph('<b>Total Amount in INR (Round off)</b>', label_style),Paragraph(f"₹{round_total:.2f}", value_style)],
-        ]
-        totals_table = Table(
-            totals_rows,
-            colWidths=[CONTENT_WIDTH * (4.5/6.5), CONTENT_WIDTH * (2.0/6.5)],
-            hAlign='LEFT'
-        )
-        totals_table.setStyle(base_table_style())
-        totals_table.setStyle(TableStyle([
-            ('ALIGN', (0, 0), (0, -1), 'LEFT'),
-            ('ALIGN', (1, 0), (1, -1), 'RIGHT'),
-        ]))
-        return totals_table
+    pdf.set_font('Arial', 'B', 9)
+    pdf.cell(w_tot_label, 6, "Subtotal", border="LRT")
+    pdf.cell(w_tot_val, 6, f"{rs}{subtotal:.2f}", border="LRT", align="R", ln=1)
+    
+    pdf.cell(w_tot_label, 6, f"SGST ({sgst_eff:.2f}%)", border="LR")
+    pdf.cell(w_tot_val, 6, f"{rs}{sgst:.2f}", border="LR", align="R", ln=1)
+    
+    pdf.cell(w_tot_label, 6, f"CGST ({cgst_eff:.2f}%)", border="LR")
+    pdf.cell(w_tot_val, 6, f"{rs}{cgst:.2f}", border="LR", align="R", ln=1)
+    
+    pdf.cell(w_tot_label, 6, "Total Amount in INR", border="LR")
+    pdf.cell(w_tot_val, 6, f"{rs}{total:.2f}", border="LR", align="R", ln=1)
+    
+    pdf.cell(w_tot_label, 6, "Total Amount in INR (Round off)", border="LRB")
+    pdf.cell(w_tot_val, 6, f"{rs}{round_total:.2f}", border="LRB", align="R", ln=1)
 
-    # ===== Helper function to build amount in words
-    def build_amount_in_words():
-        words_text = amount_in_words_inr(round_total)
-        words_row = Table(
-            [[Paragraph(f'<b>Total Amount In Words :</b> {words_text}', value_style)]],
-            colWidths=[CONTENT_WIDTH],
-            hAlign='LEFT'
-        )
-        words_row.setStyle(base_table_style())
-        return words_row
+    # Amount in words
+    words_text = txt(amount_in_words_inr(round_total))
+    pdf.set_font('Arial', 'B', 9)
+    pdf.cell(40, 8, "Total Amount In Words :", border="LBT")
+    pdf.set_font('Arial', '', 9)
+    pdf.cell(page_w - 40, 8, words_text, border="RBT", ln=1)
+    pdf.cell(page_w, 6, "", border="LRBT", ln=1)
+    
+    # Bank Details + Signatory
+    b_left_w = page_w * 4.3/6.5
+    b_right_w = page_w * 2.2/6.5
 
-    # ===== Helper function to build bank details
-    def build_bank_details():
-        bank_left_rows = [
-            [Paragraph('<b>Bank Details</b>', label_style)],
-            [Paragraph(f"Account Holder Name: {getattr(invoice, 'bank_account_holder_name', '')}", value_style)],
-            [Paragraph(f"Account number: {invoice.bank_account_number}", value_style)],
-            [Paragraph(f"Branch Name: {invoice.bank_branch_name}", value_style)],
-            [Paragraph(f"Branch IFSC: {invoice.bank_branch_ifsc}", value_style)],
-            [Paragraph(f"Branch Address: {invoice.bank_branch_address}", value_style)],
-            [Paragraph(f"<b>PAN No:</b> {invoice.pan_number}", value_style)],
-        ]
-        bank_left_table = Table(
-            bank_left_rows,
-            colWidths=[CONTENT_WIDTH * (4.3/6.5)],
-            hAlign='LEFT'
-        )
-        bank_left_table.setStyle(base_table_style())
+    x_start = pdf.get_x()
+    y_start = pdf.get_y()
 
-        sign_rows = [
-            [Paragraph('<b>For NITRA ENTERPRISES</b>', label_style)],
-            [Spacer(1, 28)],
-            [Spacer(1, 28)],
-            [Paragraph('Authorised Signatory', value_style)],
-        ]
-        sign_table = Table(
-            sign_rows,
-            colWidths=[CONTENT_WIDTH * (2.2/6.5)],
-            hAlign='CENTER'
-        )
-        sign_table.setStyle(TableStyle([
-            ('BOX', (0, 0), (-1, -1), 1, colors.black),
-            ('INNERGRID', (0, 0), (-1, -1), 0, colors.white),
-            ('ALIGN', (0, 0), (-1, 0), 'CENTER'),
-            ('ALIGN', (0, -1), (-1, -1), 'CENTER'),
-            ('VALIGN', (0, 0), (-1, -1), 'BOTTOM'),
-            ('TOPPADDING', (0, 0), (-1, 0), 8),
-            ('BOTTOMPADDING', (0, -1), (-1, -1), 8),
-        ]))
+    # Draw bank details text
+    pdf.set_font('Arial', 'B', 9)
+    pdf.cell(b_left_w, 6, "Bank Details", border="LRT", ln=2)
+    pdf.set_font('Arial', '', 9)
+    pdf.cell(b_left_w, 6, txt(f"Account Holder Name: {getattr(invoice, 'bank_account_holder_name', '')}"), border="LR", ln=2)
+    pdf.cell(b_left_w, 6, txt(f"Account number: {invoice.bank_account_number}"), border="LR", ln=2)
+    pdf.cell(b_left_w, 6, txt(f"Branch Name: {invoice.bank_branch_name}"), border="LR", ln=2)
+    pdf.cell(b_left_w, 6, txt(f"Branch IFSC: {invoice.bank_branch_ifsc}"), border="LR", ln=2)
+    pdf.cell(b_left_w, 6, txt(f"Branch Address: {invoice.bank_branch_address}"), border="LR", ln=2)
+    pdf.set_font('Arial', 'B', 9)
+    pdf.cell(b_left_w, 6, txt(f"PAN No: {invoice.pan_number}"), border="LRB")
+    
+    # Move to right col for signatory
+    y_end = pdf.get_y()
+    pdf.set_xy(x_start + b_left_w, y_start)
+    
+    # Draw right column (signatory) bounding box
+    pdf.cell(b_right_w, 6, "For NITRA ENTERPRISES", border="LRT", align="C", ln=2)
+    # The height left is (y_end - y_start) - 6 + 6
+    h_left = (y_end - y_start) - 12
+    if h_left < 0: h_left = 12
+    pdf.cell(b_right_w, h_left, "", border="LR", ln=2)
+    pdf.set_font('Arial', '', 9)
+    pdf.cell(b_right_w, 6, "Authorised Signatory", border="LRB", align="C")
 
-        bank_combo = Table(
-            [[bank_left_table, sign_table]],
-            colWidths=[CONTENT_WIDTH * (4.3/6.5), CONTENT_WIDTH * (2.2/6.5)],
-            hAlign='LEFT'
-        )
-        bank_combo.setStyle(TableStyle([
-            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
-            ('LEFTPADDING', (0, 0), (-1, -1), 0),
-            ('RIGHTPADDING', (0, 0), (-1, -1), 0),
-            ('TOPPADDING', (0, 0), (-1, -1), 0),
-            ('BOTTOMPADDING', (0, 0), (-1, -1), 0),
-        ]))
-        return bank_combo
+    # Reset position
+    pdf.set_xy(x_start, y_end + 6)
+    
+    # Footer
+    pdf.set_font('Arial', 'B', 9)
+    pdf.cell(page_w, 6, "Declaration", border="LRT", ln=1)
+    pdf.set_font('Arial', '', 9)
+    pdf.cell(page_w, 6, "We Declare that this invoice shows the actual price of the goods described", border="LR", ln=1)
+    pdf.cell(page_w, 6, "and that all the particulars are the true and correct.", border="LRB", ln=1)
+    
+    pdf.set_font('Arial', 'I', 8)
+    pdf.cell(page_w, 6, txt(invoice.jurisdiction_note), border=1, align="C", ln=1)
 
-    # ===== Helper function to build declaration and jurisdiction
-    def build_footer():
-        dec_header = Table([[Paragraph('<b>Declaration</b>', label_style)]],
-                           colWidths=[CONTENT_WIDTH], hAlign='LEFT')
-        dec_header.setStyle(base_table_style())
-        
-        dec_table  = Table([[Paragraph(
-            'We Declare that this invoice shows the actual price of the goods described and that all the particulars are the true and correct.',
-            value_style)]], colWidths=[CONTENT_WIDTH], hAlign='LEFT')
-        dec_table.setStyle(base_table_style())
-        
-        jur_table = Table([[Paragraph(f"<i>{invoice.jurisdiction_note}</i>", small_center)]],
-                          colWidths=[CONTENT_WIDTH], hAlign='LEFT')
-        jur_table.setStyle(base_table_style())
-        
-        return [dec_header, dec_table, jur_table]
-
-    # ===== Build pages
-    for page_num, page_items in enumerate(item_pages):
-        is_first_page = (page_num == 0)
-        is_last_page = (page_num == len(item_pages) - 1)
-
-        # Page header
-        story.append(build_header())
-        
-        # Page meta
-        story.append(build_meta())
-        story.append(Spacer(0, 4))
-
-        # Additional info (only on first page)
-        if is_first_page:
-            additional = build_additional_info()
-            if additional:
-                story.append(additional)
-                story.append(Spacer(0, 4))
-
-            # Customer section (only on first page)
-            story.append(build_customer_section())
-            story.append(Spacer(0, 4))
-
-        # Items for this page
-        story.append(build_items_table(page_items))
-
-        # Totals (only on last page)
-        if is_last_page:
-            story.append(build_totals_section())
-            story.append(build_amount_in_words())
-            story.append(Table([[Paragraph("", value_style)]], colWidths=[CONTENT_WIDTH], hAlign='LEFT').setStyle(base_table_style()))
-            story.append(build_bank_details())
-            
-            # Footer (only on last page)
-            for footer_item in build_footer():
-                story.append(footer_item)
-        else:
-            # If not last page, add page break
-            from reportlab.platypus import PageBreak
-            story.append(PageBreak())
-
-    doc.build(story)
+    pdf.output(str(pdf_path))
     return str(pdf_path)
