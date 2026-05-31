@@ -81,10 +81,39 @@ def main(page: ft.Page):
         invoice_number = ft.TextField(label="Invoice Number")
         invoice_date = ft.TextField(label="Invoice Date (dd-mm-yyyy)")
         po_number = ft.TextField(label="PO Number")
+        po_date = ft.TextField(label="PO Date (dd-mm-yyyy)")
+        challan_number = ft.TextField(label="Challan Number")
+        challan_date = ft.TextField(label="Challan Date (dd-mm-yyyy)")
         
-        customer_name = ft.TextField(label="Customer Name")
-        customer_address = ft.TextField(label="Customer Address", multiline=True)
-        customer_gstin = ft.TextField(label="Customer GSTIN")
+        # Customer Suggestions Dropdown
+        customer_dropdown = ft.Dropdown(label="Select Existing Customer...", options=[])
+        
+        customer_name = ft.TextField(label="Invoice To Name")
+        customer_address = ft.TextField(label="Invoice To Address", multiline=True)
+        customer_gstin = ft.TextField(label="Invoice To GSTIN")
+        
+        ship_to_name = ft.TextField(label="Ship To Name")
+        ship_to_address = ft.TextField(label="Ship To Address", multiline=True)
+        ship_to_gstin = ft.TextField(label="Ship To GSTIN")
+        
+        def populate_customer_dropdown():
+            customers = db.get_unique_customers()
+            options = [ft.dropdown.Option(name) for name in sorted(customers.keys())]
+            customer_dropdown.options = options
+            
+        def on_customer_select(e):
+            if not customer_dropdown.value: return
+            customers = db.get_unique_customers()
+            data = customers.get(customer_dropdown.value, {})
+            customer_name.value = customer_dropdown.value
+            customer_address.value = data.get('address', '')
+            customer_gstin.value = data.get('gstin', '')
+            ship_to_name.value = data.get('ship_to_name', '')
+            ship_to_address.value = data.get('ship_to_address', '')
+            ship_to_gstin.value = data.get('ship_to_gstin', '')
+            page.update()
+            
+        customer_dropdown.on_change = on_customer_select
 
         line_items = []
         
@@ -159,9 +188,9 @@ def main(page: ft.Page):
 
         add_item_dialog = ft.AlertDialog(
             title=ft.Text("Add Line Item"),
-            content=ft.ListView([
+            content=ft.Column([
                 add_desc, add_hsn, add_qty, add_price, add_sgst, add_cgst
-            ], expand=False, shrink_wrap=True),
+            ], scroll=ft.ScrollMode.AUTO, height=400),
             actions=[
                 ft.TextButton("Add", on_click=dlg_add_item_click),
                 ft.TextButton("Cancel", on_click=lambda e: setattr(add_item_dialog, 'open', False) or page.update())
@@ -178,6 +207,9 @@ def main(page: ft.Page):
                 invoice_number=invoice_number.value,
                 invoice_date=invoice_date.value,
                 po_number=po_number.value,
+                po_date=po_date.value,
+                challan_number=challan_number.value,
+                challan_date=challan_date.value,
                 company_name=company_name.value,
                 company_address=company_address.value,
                 company_gstin=company_gstin.value,
@@ -187,6 +219,9 @@ def main(page: ft.Page):
                 customer_name=customer_name.value,
                 customer_address=customer_address.value,
                 customer_gstin=customer_gstin.value,
+                ship_to_name=ship_to_name.value,
+                ship_to_address=ship_to_address.value,
+                ship_to_gstin=ship_to_gstin.value,
                 bank_account_holder_name=bank_acc_name.value,
                 bank_account_number=bank_acc_no.value,
                 bank_branch_name=bank_branch.value,
@@ -223,6 +258,7 @@ def main(page: ft.Page):
         invoice_number.value = db.get_next_invoice_number(prefix=prefix, series_year=True, width=4)
         invoice_date.value = datetime.datetime.now().strftime("%d-%m-%Y")
         refresh_items_list()
+        populate_customer_dropdown()
 
         create_tab = ft.Tab(
             text="Create",
@@ -233,10 +269,14 @@ def main(page: ft.Page):
                 padding=10,
                 controls=[
                     ft.Text("Invoice Info", size=18, weight=ft.FontWeight.BOLD),
-                    invoice_number, invoice_date, po_number,
+                    invoice_number, invoice_date, po_number, po_date, challan_number, challan_date,
                     ft.Divider(),
                     ft.Text("Customer Info", size=18, weight=ft.FontWeight.BOLD),
+                    customer_dropdown,
                     customer_name, customer_address, customer_gstin,
+                    ft.Divider(),
+                    ft.Text("Ship To", size=18, weight=ft.FontWeight.BOLD),
+                    ship_to_name, ship_to_address, ship_to_gstin,
                     ft.Divider(),
                     ft.Text("Line Items", size=18, weight=ft.FontWeight.BOLD),
                     items_column,
