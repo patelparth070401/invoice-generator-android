@@ -7,11 +7,30 @@ import decimal
 
 from .models import Invoice, ConfigManager
 
-if hasattr(sys, '_MEIPASS'):
-    exe_dir = Path(sys.executable).parent
-    OUTPUT_DIR = exe_dir / "data" / "invoices"
-else:
-    OUTPUT_DIR = Path(__file__).parent.parent / "data" / "invoices"
+def get_output_dir():
+    if hasattr(sys, '_MEIPASS'):
+        return Path(sys.executable).parent / "data" / "invoices"
+    
+    local_dir = Path(__file__).parent.parent / "data" / "invoices"
+    try:
+        local_dir.mkdir(parents=True, exist_ok=True)
+        return local_dir
+    except (PermissionError, OSError):
+        pass
+        
+    home_dir = os.environ.get("HOME")
+    if home_dir:
+        try:
+            android_dir = Path(home_dir) / "invoices"
+            android_dir.mkdir(parents=True, exist_ok=True)
+            return android_dir
+        except (PermissionError, OSError):
+            pass
+            
+    import tempfile
+    return Path(tempfile.gettempdir()) / "invoices"
+
+OUTPUT_DIR = get_output_dir()
 
 def amount_in_words_inr(amount: float) -> str:
     NUM_WORDS_1_TO_19 = [

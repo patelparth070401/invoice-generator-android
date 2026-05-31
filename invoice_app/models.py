@@ -11,15 +11,31 @@ from pathlib import Path
 from datetime import datetime
 from typing import List, Dict, Optional
 
-# Determine DATA_DIR based on whether running as exe or from source
-if hasattr(sys, '_MEIPASS'):
-    # Running as PyInstaller exe - use exe directory
-    exe_dir = Path(sys.executable).parent
-    DATA_DIR = exe_dir / "data"
-else:
-    # Running from source - use project data folder
-    DATA_DIR = Path(__file__).parent.parent / "data"
+# Determine DATA_DIR based on environment
+def get_data_dir():
+    if hasattr(sys, '_MEIPASS'):
+        return Path(sys.executable).parent / "data"
+    
+    local_dir = Path(__file__).parent.parent / "data"
+    try:
+        local_dir.mkdir(parents=True, exist_ok=True)
+        return local_dir
+    except (PermissionError, OSError):
+        pass
+        
+    home_dir = os.environ.get("HOME")
+    if home_dir:
+        try:
+            android_dir = Path(home_dir) / "data"
+            android_dir.mkdir(parents=True, exist_ok=True)
+            return android_dir
+        except (PermissionError, OSError):
+            pass
+            
+    import tempfile
+    return Path(tempfile.gettempdir()) / "data"
 
+DATA_DIR = get_data_dir()
 DB_PATH = DATA_DIR / "invoices.db"
 CONFIG_PATH = DATA_DIR / "config.json"
 

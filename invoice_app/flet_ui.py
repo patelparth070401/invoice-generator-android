@@ -184,6 +184,13 @@ def main(page: ft.Page):
         snack = ft.SnackBar(ft.Text(f"PDF Generated at: {pdf_path}"))
         page.snack_bar = snack
         snack.open = True
+        
+        # Open PDF natively on device
+        try:
+            page.launch_url(f"file://{pdf_path}")
+        except Exception:
+            pass
+            
         page.update()
 
     # Initialize auto invoice number
@@ -193,9 +200,8 @@ def main(page: ft.Page):
     invoice_date.value = datetime.datetime.now().strftime("%d-%m-%Y")
 
     # Layout
-    page.add(
-        ft.Tabs(
-            selected_index=0,
+    main_tabs = ft.Tabs(
+        selected_index=0,
             animation_duration=300,
             tabs=[
                 ft.Tab(
@@ -225,7 +231,16 @@ def main(page: ft.Page):
                     ], scroll=ft.ScrollMode.AUTO)
                 )
             ],
-            expand=1,
+            expand=True,
+        )
+        
+    page.add(
+        ft.SafeArea(
+            ft.Container(
+                content=main_tabs,
+                expand=True
+            ),
+            expand=True
         )
     )
 
