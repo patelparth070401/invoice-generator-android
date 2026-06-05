@@ -2,6 +2,7 @@ import flet as ft
 from invoice_app.models import Invoice, LineItem, InvoiceDB, ConfigManager
 from invoice_app.pdf_generator import generate_pdf
 import os
+import traceback
 import datetime
 
 def main(page: ft.Page):
@@ -20,7 +21,6 @@ def main(page: ft.Page):
             if os.path.exists(bundled_logo):
                 logo_path = bundled_logo
     except Exception as e:
-        import traceback
         page.add(ft.SafeArea(ft.Text(f"ERROR INIT: {e}\n{traceback.format_exc()}", color="red", selectable=True)))
         return
         
@@ -39,6 +39,11 @@ def main(page: ft.Page):
         bank_acc_no = ft.TextField(label="Account No", value=config.get('bank_account_number', ''))
         bank_branch = ft.TextField(label="Branch Name", value=config.get('bank_branch_name', ''))
         bank_ifsc = ft.TextField(label="Branch IFSC", value=config.get('bank_branch_ifsc', ''))
+        invoice_start_number = ft.TextField(
+            label="Invoice Start Number",
+            value=str(config.get('invoice_start_number', 32)),
+            keyboard_type=ft.KeyboardType.NUMBER
+        )
 
         def save_settings(e):
             config.set('company_name', company_name.value)
@@ -51,6 +56,10 @@ def main(page: ft.Page):
             config.set('bank_account_number', bank_acc_no.value)
             config.set('bank_branch_name', bank_branch.value)
             config.set('bank_branch_ifsc', bank_ifsc.value)
+            try:
+                config.set('invoice_start_number', int(invoice_start_number.value))
+            except ValueError:
+                pass
             config.save()
             page.snack_bar = ft.SnackBar(ft.Text("Settings saved successfully!"))
             page.snack_bar.open = True
@@ -70,6 +79,9 @@ def main(page: ft.Page):
                     ft.Text("Bank Details", size=18, weight=ft.FontWeight.BOLD),
                     bank_acc_name, bank_acc_no, bank_branch, bank_ifsc,
                     ft.Divider(),
+                    ft.Text("Invoice Series", size=18, weight=ft.FontWeight.BOLD),
+                    invoice_start_number,
+                    ft.Divider(),
                     ft.ElevatedButton("Save Settings", on_click=save_settings, color=ft.colors.WHITE, bgcolor=ft.colors.GREEN)
                 ]
             )
@@ -84,6 +96,33 @@ def main(page: ft.Page):
         po_date = ft.TextField(label="PO Date (dd-mm-yyyy)")
         challan_number = ft.TextField(label="Challan Number")
         challan_date = ft.TextField(label="Challan Date (dd-mm-yyyy)")
+
+        # Date pickers
+        def _make_date_picker(target_field):
+            dp = ft.DatePicker(
+                first_date=datetime.datetime(2020, 1, 1),
+                last_date=datetime.datetime(2030, 12, 31),
+            )
+            def on_change(e, tf=target_field, picker=dp):
+                if picker.value:
+                    tf.value = picker.value.strftime("%d-%m-%Y")
+                    tf.update()
+            dp.on_change = on_change
+            page.overlay.append(dp)
+            return dp
+
+        dp_invoice_date = _make_date_picker(invoice_date)
+        dp_po_date = _make_date_picker(po_date)
+        dp_challan_date = _make_date_picker(challan_date)
+
+        def _date_row(label_field, dp):
+            def open_picker(e, picker=dp):
+                picker.open = True
+                page.update()
+            return ft.Row([
+                ft.Container(content=label_field, expand=True),
+                ft.IconButton(icon=ft.icons.CALENDAR_TODAY, tooltip="Pick date", on_click=open_picker)
+            ], vertical_alignment=ft.CrossAxisAlignment.CENTER)
         
         # Customer Suggestions Dropdown
         customer_dropdown = ft.Dropdown(label="Select Existing Customer...", options=[])
@@ -203,59 +242,67 @@ def main(page: ft.Page):
             page.update()
 
         def generate_pdf_action(e):
-            inv = Invoice(
-                invoice_number=invoice_number.value,
-                invoice_date=invoice_date.value,
-                po_number=po_number.value,
-                po_date=po_date.value,
-                challan_number=challan_number.value,
-                challan_date=challan_date.value,
-                company_name=company_name.value,
-                company_address=company_address.value,
-                company_gstin=company_gstin.value,
-                company_phone=company_phone.value,
-                company_email=company_email.value,
-                pan_number=pan_number.value,
-                customer_name=customer_name.value,
-                customer_address=customer_address.value,
-                customer_gstin=customer_gstin.value,
-                ship_to_name=ship_to_name.value,
-                ship_to_address=ship_to_address.value,
-                ship_to_gstin=ship_to_gstin.value,
-                bank_account_holder_name=bank_acc_name.value,
-                bank_account_number=bank_acc_no.value,
-                bank_branch_name=bank_branch.value,
-                bank_branch_ifsc=bank_ifsc.value,
-            )
-            for i in line_items:
-                inv.add_item(i)
-            
-            # Save invoice to DB
-            db.save_invoice(inv, line_items)
-            
-            # Generate PDF
-            pdf_path = generate_pdf(inv, logo_path)
-            
-            page.snack_bar = ft.SnackBar(ft.Text("PDF Generated successfully!"))
-            page.snack_bar.open = True
-            
-            # Auto-increment invoice number
-            prefix = config.get('invoice_prefix', 'INV')
-            invoice_number.value = db.get_next_invoice_number(prefix=prefix, series_year=True, width=4)
-            
-            # Refresh history tab
-            refresh_history()
-            
             try:
-                page.launch_url(f"file://{pdf_path}")
-            except Exception:
-                pass
-            
-            page.update()
+                inv = Invoice(
+                    invoice_number=invoice_number.value,
+                    invoice_date=invoice_date.value,
+                    po_number=po_number.value,
+                    po_date=po_date.value,
+                    challan_number=challan_number.value,
+                    challan_date=challan_date.value,
+                    company_name=company_name.value,
+                    company_address=company_address.value,
+                    company_gstin=company_gstin.value,
+                    company_phone=company_phone.value,
+                    company_email=company_email.value,
+                    pan_number=pan_number.value,
+                    customer_name=customer_name.value,
+                    customer_address=customer_address.value,
+                    customer_gstin=customer_gstin.value,
+                    ship_to_name=ship_to_name.value,
+                    ship_to_address=ship_to_address.value,
+                    ship_to_gstin=ship_to_gstin.value,
+                    bank_account_holder_name=bank_acc_name.value,
+                    bank_account_number=bank_acc_no.value,
+                    bank_branch_name=bank_branch.value,
+                    bank_branch_ifsc=bank_ifsc.value,
+                )
+                for i in line_items:
+                    inv.add_item(i)
+                
+                # Save invoice to DB
+                db.save_invoice(inv)
+                
+                # Generate PDF
+                pdf_path = generate_pdf(inv, logo_path)
+                
+                page.snack_bar = ft.SnackBar(ft.Text(f"PDF saved: {pdf_path}"))
+                page.snack_bar.open = True
+                
+                # Auto-increment invoice number
+                start = config.get('invoice_start_number', 32)
+                invoice_number.value = db.get_next_invoice_number(start_number=start)
+                
+                # Refresh history tab
+                refresh_history()
+                
+                try:
+                    page.launch_url(f"file://{pdf_path}")
+                except Exception:
+                    pass
+                
+                page.update()
+            except Exception as ex:
+                page.snack_bar = ft.SnackBar(
+                    ft.Text(f"Error: {ex}", color=ft.colors.WHITE),
+                    bgcolor=ft.colors.RED
+                )
+                page.snack_bar.open = True
+                page.update()
 
         # Initialize defaults
-        prefix = config.get('invoice_prefix', 'INV')
-        invoice_number.value = db.get_next_invoice_number(prefix=prefix, series_year=True, width=4)
+        start = config.get('invoice_start_number', 32)
+        invoice_number.value = db.get_next_invoice_number(start_number=start)
         invoice_date.value = datetime.datetime.now().strftime("%d-%m-%Y")
         refresh_items_list()
         populate_customer_dropdown()
@@ -269,7 +316,12 @@ def main(page: ft.Page):
                 padding=10,
                 controls=[
                     ft.Text("Invoice Info", size=18, weight=ft.FontWeight.BOLD),
-                    invoice_number, invoice_date, po_number, po_date, challan_number, challan_date,
+                    invoice_number,
+                    _date_row(invoice_date, dp_invoice_date),
+                    po_number,
+                    _date_row(po_date, dp_po_date),
+                    challan_number,
+                    _date_row(challan_date, dp_challan_date),
                     ft.Divider(),
                     ft.Text("Customer Info", size=18, weight=ft.FontWeight.BOLD),
                     customer_dropdown,
@@ -356,7 +408,6 @@ def main(page: ft.Page):
             )
         )
     except Exception as e:
-        import traceback
         page.add(ft.SafeArea(ft.ListView([ft.Text(f"ERROR LAYOUT: {e}\n{traceback.format_exc()}", color="red", selectable=True)], expand=True)))
         return
 
