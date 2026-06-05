@@ -6,6 +6,7 @@ Invoice data models, config, and database management (aligned with updated PDF/U
 import sqlite3
 import json
 import os
+import re
 import sys
 from pathlib import Path
 from datetime import datetime
@@ -444,7 +445,6 @@ class InvoiceDB:
 
     def get_next_invoice_number(self, start_number: int = 32) -> str:
         """Return next invoice number in format {seq}-{MM}/{YY} (e.g. 32-06/26)."""
-        import re
         now = datetime.now()
         mm = now.strftime('%m')
         yy = now.strftime('%y')

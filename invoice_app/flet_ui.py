@@ -2,6 +2,7 @@ import flet as ft
 from invoice_app.models import Invoice, LineItem, InvoiceDB, ConfigManager
 from invoice_app.pdf_generator import generate_pdf
 import os
+import traceback
 import datetime
 
 def main(page: ft.Page):
@@ -20,7 +21,6 @@ def main(page: ft.Page):
             if os.path.exists(bundled_logo):
                 logo_path = bundled_logo
     except Exception as e:
-        import traceback
         page.add(ft.SafeArea(ft.Text(f"ERROR INIT: {e}\n{traceback.format_exc()}", color="red", selectable=True)))
         return
         
@@ -293,7 +293,6 @@ def main(page: ft.Page):
                 
                 page.update()
             except Exception as ex:
-                import traceback
                 page.snack_bar = ft.SnackBar(
                     ft.Text(f"Error: {ex}", color=ft.colors.WHITE),
                     bgcolor=ft.colors.RED
@@ -409,7 +408,6 @@ def main(page: ft.Page):
             )
         )
     except Exception as e:
-        import traceback
         page.add(ft.SafeArea(ft.ListView([ft.Text(f"ERROR LAYOUT: {e}\n{traceback.format_exc()}", color="red", selectable=True)], expand=True)))
         return
 
