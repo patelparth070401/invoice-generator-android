@@ -2,9 +2,26 @@ import flet as ft
 from invoice_app.models import Invoice, LineItem, InvoiceDB, ConfigManager
 from invoice_app.pdf_generator import generate_pdf
 import os
+import subprocess
 import traceback
 import datetime
 import urllib.parse
+
+
+def _is_android() -> bool:
+    """Check if running on Android."""
+    return os.path.exists('/system/bin/am') or 'ANDROID_ROOT' in os.environ
+
+
+def _am_start(args: list) -> bool:
+    """Run 'am start' on Android. Returns True on success."""
+    try:
+        am = '/system/bin/am' if os.path.exists('/system/bin/am') else 'am'
+        subprocess.Popen([am, 'start'] + args,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return True
+    except Exception:
+        return False
 
 def main(page: ft.Page):
     try:
@@ -304,8 +321,10 @@ def main(page: ft.Page):
                 for i in line_items:
                     inv.add_item(i)
                 
-                # Generate PDF using user-configured output directory (default: /sdcard/Invoices)
+                # Generate PDF using user-configured output directory
                 pdf_out_dir = config.get('pdf_output_dir', '')
+                if not pdf_out_dir:
+                    pdf_out_dir = _default_pdf_dir()
                 pdf_path = generate_pdf(inv, logo_path, output_dir=pdf_out_dir)
                 
                 # Save invoice to DB including pdf path
@@ -383,38 +402,80 @@ def main(page: ft.Page):
                 page.snack_bar.open = True
                 page.update()
                 return
-            try:
-                # Correct Android intent URL: scheme=file tells Android the data URI scheme
-                encoded_path = urllib.parse.quote(pdf_path, safe='/')
-                intent_url = (
-                    f"intent://{encoded_path}#Intent;"
-                    "scheme=file;"
-                    "action=android.intent.action.VIEW;"
-                    "type=application/pdf;"
-                    "end"
-                )
-                page.launch_url(intent_url)
-            except Exception:
+
+            opened = False
+
+            # Primary: Android 'am start' command (most reliable on Android)
+            if _is_android():
+                opened = _am_start([
+                    '-a', 'android.intent.action.VIEW',
+                    '-d', f'file://{pdf_path}',
+                    '-t', 'application/pdf',
+                    '--grant-read-uri-permission',
+                ])
+
+            # Fallback 1: intent:// URL via Flet's launch_url
+            if not opened:
                 try:
-                    page.launch_url(f"file://{pdf_path}")
+                    encoded_path = urllib.parse.quote(pdf_path, safe='/')
+                    intent_url = (
+                        f"intent://{encoded_path}#Intent;"
+                        "scheme=file;"
+                        "action=android.intent.action.VIEW;"
+                        "type=application/pdf;"
+                        "launchFlags=0x10000001;"
+                        "end"
+                    )
+                    page.launch_url(intent_url)
+                    opened = True
                 except Exception:
                     pass
-                page.snack_bar = ft.SnackBar(ft.Text(f"PDF saved at: {pdf_path}", selectable=True))
-                page.snack_bar.open = True
-                page.update()
+
+            # Fallback 2: file:// URL
+            if not opened:
+                try:
+                    page.launch_url(f"file://{pdf_path}")
+                    opened = True
+                except Exception:
+                    pass
+
+            # Always show a confirmation snackbar with the path
+            page.snack_bar = ft.SnackBar(
+                ft.Text(f"PDF: {pdf_path}", selectable=True),
+                duration=4000,
+            )
+            page.snack_bar.open = True
+            page.update()
 
         def _share_whatsapp(inv_num: str, pdf_path: str):
             """Share invoice via WhatsApp with PDF attached and a short thank-you message."""
-            msg = urllib.parse.quote("Thank you")
+            msg = "Thank you"
+
+            # Primary: Android 'am start' with file attachment
+            if pdf_path and os.path.exists(pdf_path) and _is_android():
+                sent = _am_start([
+                    '-a', 'android.intent.action.SEND',
+                    '-t', 'application/pdf',
+                    '-p', 'com.whatsapp',
+                    '--es', 'android.intent.extra.TEXT', msg,
+                    '--eu', 'android.intent.extra.STREAM', f'file://{pdf_path}',
+                    '--grant-read-uri-permission',
+                ])
+                if sent:
+                    return
+
+            # Fallback 1: intent:// URL
             if pdf_path and os.path.exists(pdf_path):
                 stream = urllib.parse.quote(f"file://{pdf_path}", safe='')
+                encoded_msg = urllib.parse.quote(msg)
                 intent_url = (
                     "intent://send#Intent;"
                     "action=android.intent.action.SEND;"
                     "type=application/pdf;"
                     "package=com.whatsapp;"
-                    f"S.android.intent.extra.TEXT={msg};"
+                    f"S.android.intent.extra.TEXT={encoded_msg};"
                     f"S.android.intent.extra.STREAM={stream};"
+                    "launchFlags=0x10000001;"
                     "end"
                 )
                 try:
@@ -422,32 +483,55 @@ def main(page: ft.Page):
                     return
                 except Exception:
                     pass
-            # Fallback: text-only
+
+            # Fallback 2: WhatsApp web API (text only, tell user where PDF is)
+            text_with_path = msg
+            if pdf_path:
+                text_with_path = f"{msg}\n\nInvoice PDF saved at: {pdf_path}"
+            encoded = urllib.parse.quote(text_with_path)
             try:
-                page.launch_url(f"whatsapp://send?text={msg}")
+                page.launch_url(f"https://api.whatsapp.com/send?text={encoded}")
             except Exception:
-                page.launch_url(f"https://wa.me/?text={msg}")
+                page.launch_url(f"https://wa.me/?text={encoded}")
 
         def _share_gmail(inv_num: str, customer: str, pdf_path: str):
             """Share invoice via Gmail with PDF attached and a professional message."""
-            subject = urllib.parse.quote(f"Invoice {inv_num}")
+            subject = f"Invoice {inv_num}"
             body_text = (
                 f"Dear {customer},\n\n"
                 f"Please find invoice {inv_num}.\n\n"
                 "Regards,\n"
                 "Nitra Enterprises"
             )
-            body = urllib.parse.quote(body_text)
+
+            # Primary: Android 'am start' with file attachment
+            if pdf_path and os.path.exists(pdf_path) and _is_android():
+                sent = _am_start([
+                    '-a', 'android.intent.action.SEND',
+                    '-t', 'application/pdf',
+                    '-p', 'com.google.android.gm',
+                    '--es', 'android.intent.extra.SUBJECT', subject,
+                    '--es', 'android.intent.extra.TEXT', body_text,
+                    '--eu', 'android.intent.extra.STREAM', f'file://{pdf_path}',
+                    '--grant-read-uri-permission',
+                ])
+                if sent:
+                    return
+
+            # Fallback 1: intent:// URL
             if pdf_path and os.path.exists(pdf_path):
+                enc_subject = urllib.parse.quote(subject)
+                enc_body = urllib.parse.quote(body_text)
                 stream = urllib.parse.quote(f"file://{pdf_path}", safe='')
                 intent_url = (
                     "intent://send#Intent;"
                     "action=android.intent.action.SEND;"
                     "type=application/pdf;"
                     "package=com.google.android.gm;"
-                    f"S.android.intent.extra.SUBJECT={subject};"
-                    f"S.android.intent.extra.TEXT={body};"
+                    f"S.android.intent.extra.SUBJECT={enc_subject};"
+                    f"S.android.intent.extra.TEXT={enc_body};"
                     f"S.android.intent.extra.STREAM={stream};"
+                    "launchFlags=0x10000001;"
                     "end"
                 )
                 try:
@@ -455,8 +539,11 @@ def main(page: ft.Page):
                     return
                 except Exception:
                     pass
-            # Fallback: mailto with body (no attachment)
-            page.launch_url(f"mailto:?subject={subject}&body={body}")
+
+            # Fallback 2: mailto (no attachment)
+            enc_subject = urllib.parse.quote(subject)
+            enc_body = urllib.parse.quote(body_text)
+            page.launch_url(f"mailto:?subject={enc_subject}&body={enc_body}")
 
         def open_history_pdf(inv_num: str):
             """Regenerate PDF (in case file was deleted) and open it."""
@@ -468,14 +555,23 @@ def main(page: ft.Page):
             inv = db.get_invoice(inv_num)
             if inv:
                 pdf_out_dir = config.get('pdf_output_dir', '')
+                if not pdf_out_dir:
+                    pdf_out_dir = _default_pdf_dir()
                 try:
                     pdf_path = generate_pdf(inv, logo_path, output_dir=pdf_out_dir)
                     db.save_invoice(inv, pdf_path=pdf_path)
                     _open_pdf(pdf_path)
                 except Exception as ex:
-                    page.snack_bar = ft.SnackBar(ft.Text(f"Error: {ex}"))
+                    page.snack_bar = ft.SnackBar(
+                        ft.Text(f"Error: {ex}", color=ft.colors.WHITE),
+                        bgcolor=ft.colors.RED,
+                    )
                     page.snack_bar.open = True
                     page.update()
+            else:
+                page.snack_bar = ft.SnackBar(ft.Text("Invoice not found in database."))
+                page.snack_bar.open = True
+                page.update()
 
         def refresh_history():
             history_list.controls.clear()
@@ -531,6 +627,105 @@ def main(page: ft.Page):
         )
 
         # ---------------------------------------------------------
+        # FIRST-RUN: Ask user to choose PDF save directory (once)
+        # ---------------------------------------------------------
+        def _ensure_pdf_dir():
+            """On first run, prompt user to pick a PDF save folder.
+            Called after the full UI is built so dialogs can display."""
+            saved_dir = config.get('pdf_output_dir', '')
+            if saved_dir:
+                # Already configured – nothing to do
+                return
+
+            # FilePicker for first-run directory selection
+            def on_first_dir_result(e: ft.FilePickerResultEvent):
+                if e.path:
+                    chosen = e.path
+                else:
+                    # User cancelled → use a sensible default
+                    chosen = _default_pdf_dir()
+                config.set('pdf_output_dir', chosen)
+                config.save()
+                pdf_dir_field.value = chosen
+                try:
+                    os.makedirs(chosen, exist_ok=True)
+                except OSError:
+                    pass
+                # Close the dialog
+                if page.dialog:
+                    page.dialog.open = False
+                page.snack_bar = ft.SnackBar(
+                    ft.Text(f"PDFs will be saved to: {chosen}"),
+                    duration=4000,
+                )
+                page.snack_bar.open = True
+                page.update()
+
+            first_picker = ft.FilePicker(on_result=on_first_dir_result)
+            page.overlay.append(first_picker)
+
+            def _pick_dir(e):
+                first_picker.get_directory_path(dialog_title="Choose PDF Save Folder")
+
+            def _use_default(e):
+                chosen = _default_pdf_dir()
+                config.set('pdf_output_dir', chosen)
+                config.save()
+                pdf_dir_field.value = chosen
+                try:
+                    os.makedirs(chosen, exist_ok=True)
+                except OSError:
+                    pass
+                page.dialog.open = False
+                page.snack_bar = ft.SnackBar(
+                    ft.Text(f"PDFs will be saved to: {chosen}"),
+                    duration=4000,
+                )
+                page.snack_bar.open = True
+                page.update()
+
+            dlg = ft.AlertDialog(
+                modal=True,
+                title=ft.Text("Choose PDF Save Location"),
+                content=ft.Text(
+                    "Please choose a folder where your invoice PDFs will be saved.\n\n"
+                    "You can change this later in Settings."
+                ),
+                actions=[
+                    ft.TextButton("Choose Folder", on_click=_pick_dir),
+                    ft.TextButton("Use Default", on_click=_use_default),
+                ],
+            )
+            page.dialog = dlg
+            dlg.open = True
+            page.update()
+
+        def _default_pdf_dir() -> str:
+            """Return a sensible default PDF directory."""
+            for base in [
+                os.environ.get('EXTERNAL_STORAGE', ''),
+                '/storage/emulated/0',
+                '/sdcard',
+            ]:
+                if base and os.path.isdir(base):
+                    d = os.path.join(base, 'Invoices')
+                    try:
+                        os.makedirs(d, exist_ok=True)
+                        return d
+                    except OSError:
+                        continue
+            home = os.environ.get("HOME") or os.path.expanduser("~")
+            if home and home != "~":
+                d = os.path.join(home, "Invoices")
+                try:
+                    os.makedirs(d, exist_ok=True)
+                    return d
+                except OSError:
+                    pass
+            import tempfile
+            return os.path.join(tempfile.gettempdir(), "Invoices")
+
+        # ---------------------------------------------------------
         # MAIN LAYOUT
         # ---------------------------------------------------------
         main_tabs = ft.Tabs(
@@ -549,6 +744,9 @@ def main(page: ft.Page):
                 expand=True
             )
         )
+
+        # Trigger first-run directory selection after UI is rendered
+        _ensure_pdf_dir()
 
     except Exception as e:
         page.add(ft.SafeArea(ft.ListView([ft.Text(f"ERROR LAYOUT: {e}\n{traceback.format_exc()}", color="red", selectable=True)], expand=True)))
