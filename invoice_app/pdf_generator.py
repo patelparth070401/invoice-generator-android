@@ -25,17 +25,36 @@ def get_output_dir(custom_dir: str = "") -> Path:
         if _is_writable_dir(p):
             return p
 
-    # Primary: Android external storage — try several well-known paths so the
+    # Check if running on Android
+    is_android = os.path.exists('/system/bin/am') or 'ANDROID_ROOT' in os.environ
+
+    # Primary: Android external storage — prefer Download/Invoices so the
     # folder is visible in the Files app and accessible to other apps.
-    for base in [
-        os.environ.get('EXTERNAL_STORAGE', ''),
-        '/storage/emulated/0',
-        '/sdcard',
-    ]:
-        if base:
-            p = Path(base) / 'Invoices'
-            if _is_writable_dir(p):
-                return p
+    if is_android:
+        for base in [
+            os.environ.get('EXTERNAL_STORAGE', ''),
+            '/storage/emulated/0',
+            '/sdcard',
+        ]:
+            if base:
+                # Prefer Download subfolder (most visible on Android)
+                p = Path(base) / 'Download' / 'Invoices'
+                if _is_writable_dir(p):
+                    return p
+                # Fallback: root-level Invoices folder
+                p = Path(base) / 'Invoices'
+                if _is_writable_dir(p):
+                    return p
+    else:
+        for base in [
+            os.environ.get('EXTERNAL_STORAGE', ''),
+            '/storage/emulated/0',
+            '/sdcard',
+        ]:
+            if base:
+                p = Path(base) / 'Invoices'
+                if _is_writable_dir(p):
+                    return p
 
     # App-private storage on Android (accessible without special permissions)
     for env_var in ['FLET_APP_STORAGE_DATA', 'ANDROID_APP_DATA', 'XDG_DATA_HOME']:
