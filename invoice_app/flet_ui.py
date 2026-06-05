@@ -377,17 +377,18 @@ def main(page: ft.Page):
         history_list = ft.ListView(expand=True, spacing=10)
 
         def _open_pdf(pdf_path: str):
-            """Open the PDF with an external viewer via Android intent."""
+            """Open the PDF with an external viewer."""
             if not pdf_path or not os.path.exists(pdf_path):
                 page.snack_bar = ft.SnackBar(ft.Text("PDF file not found."))
                 page.snack_bar.open = True
                 page.update()
                 return
             try:
-                # Use ACTION_VIEW with file:// URI — works when file is on external storage
-                encoded_path = urllib.parse.quote(pdf_path, safe='/:')
+                # Correct Android intent URL: scheme=file tells Android the data URI scheme
+                encoded_path = urllib.parse.quote(pdf_path, safe='/')
                 intent_url = (
                     f"intent://{encoded_path}#Intent;"
+                    "scheme=file;"
                     "action=android.intent.action.VIEW;"
                     "type=application/pdf;"
                     "end"
