@@ -70,16 +70,12 @@ def _default_pdf_dir() -> str:
                 if _is_writable_dir(d):
                     return d
     else:
-        # Desktop: use external storage or home directory
-        for base in [
-            os.environ.get('EXTERNAL_STORAGE', ''),
-            '/storage/emulated/0',
-            '/sdcard',
-        ]:
-            if base and os.path.isdir(base):
-                d = os.path.join(base, 'Invoices')
-                if _is_writable_dir(d):
-                    return d
+        # Desktop: use home directory
+        home = os.environ.get("HOME") or os.path.expanduser("~")
+        if home and home != "~":
+            d = os.path.join(home, 'Invoices')
+            if _is_writable_dir(d):
+                return d
 
     # App-private storage on Android (accessible without special permissions)
     for env_var in ['FLET_APP_STORAGE_DATA', 'ANDROID_APP_DATA', 'XDG_DATA_HOME']:
@@ -110,8 +106,7 @@ def _copy_to_shared_storage(pdf_path: str) -> str:
         return pdf_path
 
     # If already in shared storage, no need to copy
-    shared_prefixes = ['/storage/emulated/0/', '/sdcard/']
-    private_markers = ['/data/user/', '/data/data/', 'app_flutter']
+    private_markers = ['/data/user/', '/data/data/', '/app_flutter/']
     is_private = any(m in pdf_path for m in private_markers)
     if not is_private:
         return pdf_path

@@ -46,15 +46,12 @@ def get_output_dir(custom_dir: str = "") -> Path:
                 if _is_writable_dir(p):
                     return p
     else:
-        for base in [
-            os.environ.get('EXTERNAL_STORAGE', ''),
-            '/storage/emulated/0',
-            '/sdcard',
-        ]:
-            if base:
-                p = Path(base) / 'Invoices'
-                if _is_writable_dir(p):
-                    return p
+        # Desktop: use home directory or project-relative path
+        home_dir = os.environ.get("HOME") or os.path.expanduser("~")
+        if home_dir and home_dir != "~":
+            p = Path(home_dir) / 'Invoices'
+            if _is_writable_dir(p):
+                return p
 
     # App-private storage on Android (accessible without special permissions)
     for env_var in ['FLET_APP_STORAGE_DATA', 'ANDROID_APP_DATA', 'XDG_DATA_HOME']:
