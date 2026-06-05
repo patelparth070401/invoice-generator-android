@@ -2,6 +2,7 @@ import flet as ft
 from invoice_app.models import Invoice, LineItem, InvoiceDB, ConfigManager
 from invoice_app.pdf_generator import generate_pdf
 import os
+import shutil
 import subprocess
 import traceback
 import datetime
@@ -14,11 +15,20 @@ def _is_android() -> bool:
 
 
 def _am_start(args: list) -> bool:
-    """Run 'am start' on Android. Returns True on success."""
+    """Run 'am start' on Android. Returns True only if the command succeeds."""
     try:
         am = '/system/bin/am' if os.path.exists('/system/bin/am') else 'am'
-        subprocess.Popen([am, 'start'] + args,
-                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        result = subprocess.run(
+            [am, 'start'] + args,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            timeout=10,
+        )
+        # am start returns 0 on success; non-zero or 'Error' in output means failure
+        if result.returncode != 0:
+            return False
+        stderr_text = result.stderr.decode('utf-8', errors='ignore')
+        if 'Error' in stderr_text or 'Exception' in stderr_text:
+            return False
         return True
     except Exception:
         return False
@@ -38,16 +48,35 @@ def _is_writable_dir(d: str) -> bool:
 
 
 def _default_pdf_dir() -> str:
-    """Return a sensible default PDF directory."""
-    for base in [
-        os.environ.get('EXTERNAL_STORAGE', ''),
-        '/storage/emulated/0',
-        '/sdcard',
-    ]:
-        if base and os.path.isdir(base):
-            d = os.path.join(base, 'Invoices')
+    """Return a sensible default PDF directory.
+    
+    Prefers shared/public directories (Downloads, external storage) so PDFs
+    are visible in file-manager apps and accessible to other apps for
+    opening and sharing.
+    """
+    if _is_android():
+        # On Android, prefer the Downloads folder (visible in file managers)
+        for base in [
+            os.environ.get('EXTERNAL_STORAGE', ''),
+            '/storage/emulated/0',
+            '/sdcard',
+        ]:
+            if base and os.path.isdir(base):
+                d = os.path.join(base, 'Download', 'Invoices')
+                if _is_writable_dir(d):
+                    return d
+                # Fallback: root-level Invoices folder
+                d = os.path.join(base, 'Invoices')
+                if _is_writable_dir(d):
+                    return d
+    else:
+        # Desktop: use home directory
+        home = os.environ.get("HOME") or os.path.expanduser("~")
+        if home and home != "~":
+            d = os.path.join(home, 'Invoices')
             if _is_writable_dir(d):
                 return d
+
     # App-private storage on Android (accessible without special permissions)
     for env_var in ['FLET_APP_STORAGE_DATA', 'ANDROID_APP_DATA', 'XDG_DATA_HOME']:
         app_dir = os.environ.get(env_var, '')
@@ -64,6 +93,67 @@ def _default_pdf_dir() -> str:
     d = os.path.join(tempfile.gettempdir(), "Invoices")
     os.makedirs(d, exist_ok=True)
     return d
+
+
+def _copy_to_shared_storage(pdf_path: str) -> str:
+    """Copy a PDF from app-private storage to a shared/public location.
+    
+    Returns the shared path on success, or the original path if copying fails.
+    This ensures the PDF is visible in file-manager apps and accessible to
+    other apps (WhatsApp, Gmail, PDF viewers) for opening and sharing.
+    """
+    if not pdf_path or not os.path.exists(pdf_path):
+        return pdf_path
+
+    # If already in shared storage, no need to copy
+    private_markers = ['/data/user/', '/data/data/', '/app_flutter/']
+    is_private = any(m in pdf_path for m in private_markers)
+    if not is_private:
+        return pdf_path
+
+    # Try to copy to Download/Invoices (most visible on Android)
+    filename = os.path.basename(pdf_path)
+    for base in [
+        os.environ.get('EXTERNAL_STORAGE', ''),
+        '/storage/emulated/0',
+        '/sdcard',
+    ]:
+        if base and os.path.isdir(base):
+            for sub in ['Download/Invoices', 'Invoices']:
+                dest_dir = os.path.join(base, sub)
+                try:
+                    os.makedirs(dest_dir, exist_ok=True)
+                    dest_path = os.path.join(dest_dir, filename)
+                    shutil.copy2(pdf_path, dest_path)
+                    # Make world-readable so other apps can access it
+                    try:
+                        os.chmod(dest_path, 0o644)
+                    except OSError:
+                        pass
+                    # Notify MediaScanner so file shows up in file managers
+                    _media_scan(dest_path)
+                    return dest_path
+                except (PermissionError, OSError):
+                    continue
+
+    return pdf_path
+
+
+def _media_scan(file_path: str):
+    """Ask Android's MediaScanner to index a file so it appears in file managers."""
+    if not _is_android():
+        return
+    try:
+        am = '/system/bin/am' if os.path.exists('/system/bin/am') else 'am'
+        subprocess.run(
+            [am, 'broadcast',
+             '-a', 'android.intent.action.MEDIA_SCANNER_SCAN_FILE',
+             '-d', f'file://{file_path}'],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            timeout=5,
+        )
+    except Exception:
+        pass
 
 def main(page: ft.Page):
     try:
@@ -369,10 +459,13 @@ def main(page: ft.Page):
                     pdf_out_dir = _default_pdf_dir()
                 pdf_path = generate_pdf(inv, logo_path, output_dir=pdf_out_dir)
                 
-                # Save invoice to DB including pdf path
-                db.save_invoice(inv, pdf_path=pdf_path)
+                # Copy to shared/public storage so it's visible in file managers
+                shared_path = _copy_to_shared_storage(pdf_path)
                 
-                page.snack_bar = ft.SnackBar(ft.Text(f"Invoice saved to {pdf_path}"))
+                # Save invoice to DB with the shared path (preferred) for later access
+                db.save_invoice(inv, pdf_path=shared_path)
+                
+                page.snack_bar = ft.SnackBar(ft.Text(f"Invoice saved to {shared_path}"))
                 page.snack_bar.open = True
                 
                 # Auto-increment invoice number
@@ -445,13 +538,15 @@ def main(page: ft.Page):
                 page.update()
                 return
 
+            # Copy to shared storage so external apps can access the file
+            shared_path = _copy_to_shared_storage(pdf_path)
             opened = False
 
-            # Primary: Android 'am start' command (most reliable on Android)
+            # Primary: Android 'am start' command with shared path
             if _is_android():
                 opened = _am_start([
                     '-a', 'android.intent.action.VIEW',
-                    '-d', f'file://{pdf_path}',
+                    '-d', f'file://{shared_path}',
                     '-t', 'application/pdf',
                     '--grant-read-uri-permission',
                 ])
@@ -459,7 +554,7 @@ def main(page: ft.Page):
             # Fallback 1: intent:// URL via Flet's launch_url
             if not opened:
                 try:
-                    encoded_path = urllib.parse.quote(pdf_path, safe='/')
+                    encoded_path = urllib.parse.quote(shared_path, safe='/')
                     intent_url = (
                         f"intent://{encoded_path}#Intent;"
                         "scheme=file;"
@@ -476,14 +571,14 @@ def main(page: ft.Page):
             # Fallback 2: file:// URL
             if not opened:
                 try:
-                    page.launch_url(f"file://{pdf_path}")
+                    page.launch_url(f"file://{shared_path}")
                     opened = True
                 except Exception:
                     pass
 
             # Always show a confirmation snackbar with the path
             page.snack_bar = ft.SnackBar(
-                ft.Text(f"PDF: {pdf_path}", selectable=True),
+                ft.Text(f"PDF: {shared_path}", selectable=True),
                 duration=4000,
             )
             page.snack_bar.open = True
@@ -493,22 +588,25 @@ def main(page: ft.Page):
             """Share invoice via WhatsApp with PDF attached and a short thank-you message."""
             msg = "Thank you"
 
-            # Primary: Android 'am start' with file attachment
-            if pdf_path and os.path.exists(pdf_path) and _is_android():
+            # Copy to shared storage so WhatsApp can access the file
+            shared_path = _copy_to_shared_storage(pdf_path) if pdf_path else pdf_path
+
+            # Primary: Android 'am start' with file attachment (using shared path)
+            if shared_path and os.path.exists(shared_path) and _is_android():
                 sent = _am_start([
                     '-a', 'android.intent.action.SEND',
                     '-t', 'application/pdf',
                     '-p', 'com.whatsapp',
                     '--es', 'android.intent.extra.TEXT', msg,
-                    '--eu', 'android.intent.extra.STREAM', f'file://{pdf_path}',
+                    '--eu', 'android.intent.extra.STREAM', f'file://{shared_path}',
                     '--grant-read-uri-permission',
                 ])
                 if sent:
                     return
 
-            # Fallback 1: intent:// URL
-            if pdf_path and os.path.exists(pdf_path):
-                stream = urllib.parse.quote(f"file://{pdf_path}", safe='')
+            # Fallback 1: intent:// URL (using shared path)
+            if shared_path and os.path.exists(shared_path):
+                stream = urllib.parse.quote(f"file://{shared_path}", safe='')
                 encoded_msg = urllib.parse.quote(msg)
                 intent_url = (
                     "intent://send#Intent;"
@@ -528,8 +626,8 @@ def main(page: ft.Page):
 
             # Fallback 2: WhatsApp web API (text only, tell user where PDF is)
             text_with_path = msg
-            if pdf_path:
-                text_with_path = f"{msg}\n\nInvoice PDF saved at: {pdf_path}"
+            if shared_path:
+                text_with_path = f"{msg}\n\nInvoice PDF saved at: {shared_path}"
             encoded = urllib.parse.quote(text_with_path)
             try:
                 page.launch_url(f"https://api.whatsapp.com/send?text={encoded}")
@@ -546,25 +644,28 @@ def main(page: ft.Page):
                 "Nitra Enterprises"
             )
 
-            # Primary: Android 'am start' with file attachment
-            if pdf_path and os.path.exists(pdf_path) and _is_android():
+            # Copy to shared storage so Gmail can access the file
+            shared_path = _copy_to_shared_storage(pdf_path) if pdf_path else pdf_path
+
+            # Primary: Android 'am start' with file attachment (using shared path)
+            if shared_path and os.path.exists(shared_path) and _is_android():
                 sent = _am_start([
                     '-a', 'android.intent.action.SEND',
                     '-t', 'application/pdf',
                     '-p', 'com.google.android.gm',
                     '--es', 'android.intent.extra.SUBJECT', subject,
                     '--es', 'android.intent.extra.TEXT', body_text,
-                    '--eu', 'android.intent.extra.STREAM', f'file://{pdf_path}',
+                    '--eu', 'android.intent.extra.STREAM', f'file://{shared_path}',
                     '--grant-read-uri-permission',
                 ])
                 if sent:
                     return
 
-            # Fallback 1: intent:// URL
-            if pdf_path and os.path.exists(pdf_path):
+            # Fallback 1: intent:// URL (using shared path)
+            if shared_path and os.path.exists(shared_path):
                 enc_subject = urllib.parse.quote(subject)
                 enc_body = urllib.parse.quote(body_text)
-                stream = urllib.parse.quote(f"file://{pdf_path}", safe='')
+                stream = urllib.parse.quote(f"file://{shared_path}", safe='')
                 intent_url = (
                     "intent://send#Intent;"
                     "action=android.intent.action.SEND;"
@@ -601,8 +702,10 @@ def main(page: ft.Page):
                     pdf_out_dir = _default_pdf_dir()
                 try:
                     pdf_path = generate_pdf(inv, logo_path, output_dir=pdf_out_dir)
-                    db.save_invoice(inv, pdf_path=pdf_path)
-                    _open_pdf(pdf_path)
+                    # Copy to shared storage and save the shared path
+                    shared_path = _copy_to_shared_storage(pdf_path)
+                    db.save_invoice(inv, pdf_path=shared_path)
+                    _open_pdf(shared_path)
                 except Exception as ex:
                     page.snack_bar = ft.SnackBar(
                         ft.Text(f"Error: {ex}", color=ft.colors.WHITE),
