@@ -23,6 +23,32 @@ def _am_start(args: list) -> bool:
     except Exception:
         return False
 
+
+def _default_pdf_dir() -> str:
+    """Return a sensible default PDF directory."""
+    for base in [
+        os.environ.get('EXTERNAL_STORAGE', ''),
+        '/storage/emulated/0',
+        '/sdcard',
+    ]:
+        if base and os.path.isdir(base):
+            d = os.path.join(base, 'Invoices')
+            try:
+                os.makedirs(d, exist_ok=True)
+                return d
+            except OSError:
+                continue
+    home = os.environ.get("HOME") or os.path.expanduser("~")
+    if home and home != "~":
+        d = os.path.join(home, "Invoices")
+        try:
+            os.makedirs(d, exist_ok=True)
+            return d
+        except OSError:
+            pass
+    import tempfile
+    return os.path.join(tempfile.gettempdir(), "Invoices")
+
 def main(page: ft.Page):
     try:
         page.title = "Invoice Generator"
@@ -699,31 +725,6 @@ def main(page: ft.Page):
             page.dialog = dlg
             dlg.open = True
             page.update()
-
-        def _default_pdf_dir() -> str:
-            """Return a sensible default PDF directory."""
-            for base in [
-                os.environ.get('EXTERNAL_STORAGE', ''),
-                '/storage/emulated/0',
-                '/sdcard',
-            ]:
-                if base and os.path.isdir(base):
-                    d = os.path.join(base, 'Invoices')
-                    try:
-                        os.makedirs(d, exist_ok=True)
-                        return d
-                    except OSError:
-                        continue
-            home = os.environ.get("HOME") or os.path.expanduser("~")
-            if home and home != "~":
-                d = os.path.join(home, "Invoices")
-                try:
-                    os.makedirs(d, exist_ok=True)
-                    return d
-                except OSError:
-                    pass
-            import tempfile
-            return os.path.join(tempfile.gettempdir(), "Invoices")
 
         # ---------------------------------------------------------
         # MAIN LAYOUT
