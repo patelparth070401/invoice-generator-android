@@ -47,21 +47,25 @@ def _get_content_uri(file_path: str) -> str:
     try:
         # Ensure MediaScanner has indexed the file first
         _media_scan(file_path)
-        # Small delay to let MediaScanner finish
-        import time
-        time.sleep(0.3)
 
-        result = subprocess.run(
-            ['content', 'query', '--uri', 'content://media/external/file',
-             '--projection', '_id',
-             '--where', f"_data='{file_path}'"],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            timeout=5,
-        )
-        output = result.stdout.decode('utf-8', errors='ignore')
-        match = re.search(r'_id=(\d+)', output)
-        if match:
-            return f"content://media/external/file/{match.group(1)}"
+        # Poll MediaStore with retries (MediaScanner may take a moment)
+        for _attempt in range(3):
+            import time
+            time.sleep(0.2)
+            try:
+                result = subprocess.run(
+                    ['content', 'query', '--uri', 'content://media/external/file',
+                     '--projection', '_id',
+                     '--where', f"_data='{file_path}'"],
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    timeout=5,
+                )
+                output = result.stdout.decode('utf-8', errors='ignore')
+                match = re.search(r'_id=(\d+)', output)
+                if match:
+                    return f"content://media/external/file/{match.group(1)}"
+            except Exception:
+                pass
     except Exception:
         pass
 
@@ -561,7 +565,7 @@ def main(page: ft.Page):
                 # Save invoice to DB with the shared path (preferred) for later access
                 db.save_invoice(inv, pdf_path=shared_path)
                 
-                page.snack_bar = ft.SnackBar(ft.Text(f"Invoice saved to {shared_path}"))
+                page.snack_bar = ft.SnackBar(ft.Text(f"Invoice {inv.invoice_number} saved successfully!"))
                 page.snack_bar.open = True
                 
                 # Auto-increment invoice number
@@ -574,7 +578,7 @@ def main(page: ft.Page):
                 page.update()
             except Exception as ex:
                 page.snack_bar = ft.SnackBar(
-                    ft.Text(f"Error: {ex}\n{traceback.format_exc()}", color=ft.colors.WHITE, selectable=True),
+                    ft.Text(f"Error generating invoice: {ex}", color=ft.colors.WHITE),
                     bgcolor=ft.colors.RED,
                     duration=6000,
                 )
@@ -819,7 +823,7 @@ def main(page: ft.Page):
                     _open_pdf(shared_path)
                 except Exception as ex:
                     page.snack_bar = ft.SnackBar(
-                        ft.Text(f"Error generating PDF: {ex}\n{traceback.format_exc()}", color=ft.colors.WHITE, selectable=True),
+                        ft.Text(f"Error generating PDF: {ex}", color=ft.colors.WHITE),
                         bgcolor=ft.colors.RED,
                         duration=6000,
                     )
