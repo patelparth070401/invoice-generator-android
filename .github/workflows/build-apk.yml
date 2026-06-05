@@ -34,7 +34,7 @@ jobs:
         if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
     - name: Build APK
-      run: flet build apk --project InvoiceApp --description "Invoice Generator App"
+      run: flet build apk --project InvoiceApp --description "Invoice Generator App" --android-min-sdk-version 21 --android-target-sdk-version 34
 
     - name: Upload APK
       uses: actions/upload-artifact@v4
