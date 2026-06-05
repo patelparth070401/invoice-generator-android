@@ -48,7 +48,7 @@ def main(page: ft.Page):
         pdf_dir_field = ft.TextField(
             label="PDF Save Folder",
             value=config.get('pdf_output_dir', ''),
-            hint_text="Tap 'Browse' or type a folder path",
+            hint_text="Leave blank to use /sdcard/Invoices (default)",
             expand=True,
             read_only=False,
         )
@@ -304,14 +304,14 @@ def main(page: ft.Page):
                 for i in line_items:
                     inv.add_item(i)
                 
-                # Generate PDF using user-configured output directory
+                # Generate PDF using user-configured output directory (default: /sdcard/Invoices)
                 pdf_out_dir = config.get('pdf_output_dir', '')
                 pdf_path = generate_pdf(inv, logo_path, output_dir=pdf_out_dir)
                 
                 # Save invoice to DB including pdf path
                 db.save_invoice(inv, pdf_path=pdf_path)
                 
-                page.snack_bar = ft.SnackBar(ft.Text(f"PDF saved: {pdf_path}"))
+                page.snack_bar = ft.SnackBar(ft.Text(f"Invoice saved to {pdf_path}"))
                 page.snack_bar.open = True
                 
                 # Auto-increment invoice number
@@ -320,11 +320,6 @@ def main(page: ft.Page):
                 
                 # Refresh history tab
                 refresh_history()
-                
-                try:
-                    page.launch_url(f"file://{pdf_path}")
-                except Exception:
-                    pass
                 
                 page.update()
             except Exception as ex:
@@ -382,32 +377,84 @@ def main(page: ft.Page):
         history_list = ft.ListView(expand=True, spacing=10)
 
         def _open_pdf(pdf_path: str):
-            """Try to open the PDF; show path in snackbar if launch_url fails."""
+            """Open the PDF with an external viewer via Android intent."""
             if not pdf_path or not os.path.exists(pdf_path):
                 page.snack_bar = ft.SnackBar(ft.Text("PDF file not found."))
                 page.snack_bar.open = True
                 page.update()
                 return
             try:
-                page.launch_url(f"file://{pdf_path}")
+                # Use ACTION_VIEW with file:// URI — works when file is on external storage
+                encoded_path = urllib.parse.quote(pdf_path, safe='/:')
+                intent_url = (
+                    f"intent://{encoded_path}#Intent;"
+                    "action=android.intent.action.VIEW;"
+                    "type=application/pdf;"
+                    "end"
+                )
+                page.launch_url(intent_url)
             except Exception:
-                # file:// launch may not be supported on all Android versions; fall through to show path
-                pass
-            page.snack_bar = ft.SnackBar(ft.Text(f"PDF location: {pdf_path}", selectable=True))
-            page.snack_bar.open = True
-            page.update()
+                try:
+                    page.launch_url(f"file://{pdf_path}")
+                except Exception:
+                    pass
+                page.snack_bar = ft.SnackBar(ft.Text(f"PDF saved at: {pdf_path}", selectable=True))
+                page.snack_bar.open = True
+                page.update()
 
         def _share_whatsapp(inv_num: str, pdf_path: str):
-            text = urllib.parse.quote(f"Invoice {inv_num}\nFile: {pdf_path}")
+            """Share invoice via WhatsApp with PDF attached and a short thank-you message."""
+            msg = urllib.parse.quote("Thank you")
+            if pdf_path and os.path.exists(pdf_path):
+                stream = urllib.parse.quote(f"file://{pdf_path}", safe='')
+                intent_url = (
+                    "intent://send#Intent;"
+                    "action=android.intent.action.SEND;"
+                    "type=application/pdf;"
+                    "package=com.whatsapp;"
+                    f"S.android.intent.extra.TEXT={msg};"
+                    f"S.android.intent.extra.STREAM={stream};"
+                    "end"
+                )
+                try:
+                    page.launch_url(intent_url)
+                    return
+                except Exception:
+                    pass
+            # Fallback: text-only
             try:
-                page.launch_url(f"whatsapp://send?text={text}")
+                page.launch_url(f"whatsapp://send?text={msg}")
             except Exception:
-                # Fall back to web WhatsApp if native scheme is unavailable
-                page.launch_url(f"https://wa.me/?text={text}")
+                page.launch_url(f"https://wa.me/?text={msg}")
 
         def _share_gmail(inv_num: str, customer: str, pdf_path: str):
+            """Share invoice via Gmail with PDF attached and a professional message."""
             subject = urllib.parse.quote(f"Invoice {inv_num}")
-            body = urllib.parse.quote(f"Dear {customer},\n\nPlease find Invoice {inv_num}.\nFile saved at: {pdf_path}\n\nRegards")
+            body_text = (
+                f"Dear {customer},\n\n"
+                f"Please find invoice {inv_num}.\n\n"
+                "Regards,\n"
+                "Nitra Enterprises"
+            )
+            body = urllib.parse.quote(body_text)
+            if pdf_path and os.path.exists(pdf_path):
+                stream = urllib.parse.quote(f"file://{pdf_path}", safe='')
+                intent_url = (
+                    "intent://send#Intent;"
+                    "action=android.intent.action.SEND;"
+                    "type=application/pdf;"
+                    "package=com.google.android.gm;"
+                    f"S.android.intent.extra.SUBJECT={subject};"
+                    f"S.android.intent.extra.TEXT={body};"
+                    f"S.android.intent.extra.STREAM={stream};"
+                    "end"
+                )
+                try:
+                    page.launch_url(intent_url)
+                    return
+                except Exception:
+                    pass
+            # Fallback: mailto with body (no attachment)
             page.launch_url(f"mailto:?subject={subject}&body={body}")
 
         def open_history_pdf(inv_num: str):
@@ -501,50 +548,6 @@ def main(page: ft.Page):
                 expand=True
             )
         )
-
-        # ---------------------------------------------------------
-        # FIRST-RUN: ask for PDF save folder if not yet configured
-        # ---------------------------------------------------------
-        def _on_first_run_dir_result(e: ft.FilePickerResultEvent):
-            chosen = e.path or ""
-            if chosen:
-                config.set('pdf_output_dir', chosen)
-                try:
-                    config.save()
-                except Exception:
-                    pass
-                pdf_dir_field.value = chosen
-                pdf_dir_field.update()
-
-        first_run_dir_picker = ft.FilePicker(on_result=_on_first_run_dir_result)
-        page.overlay.append(first_run_dir_picker)
-
-        if not config.get('pdf_output_dir', ''):
-            first_run_dlg = ft.AlertDialog(
-                modal=True,
-                title=ft.Text("Choose PDF Save Folder"),
-                content=ft.Text(
-                    "Please choose where you want to save all generated invoices (PDFs).\n"
-                    "You can change this later in Settings."
-                ),
-            )
-
-            def _choose_folder(e):
-                first_run_dlg.open = False
-                page.update()
-                first_run_dir_picker.get_directory_path(dialog_title="Choose PDF Save Folder")
-
-            def _use_default(e):
-                first_run_dlg.open = False
-                page.update()
-
-            first_run_dlg.actions = [
-                ft.TextButton("Choose Folder", on_click=_choose_folder),
-                ft.TextButton("Use Default", on_click=_use_default),
-            ]
-            page.dialog = first_run_dlg
-            first_run_dlg.open = True
-            page.update()
 
     except Exception as e:
         page.add(ft.SafeArea(ft.ListView([ft.Text(f"ERROR LAYOUT: {e}\n{traceback.format_exc()}", color="red", selectable=True)], expand=True)))

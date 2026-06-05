@@ -16,12 +16,27 @@ def get_output_dir(custom_dir: str = "") -> Path:
         except (PermissionError, OSError):
             pass
 
+    # Primary: Android external storage — try several well-known paths so the
+    # folder is visible in the Files app and accessible to other apps.
+    for base in [
+        os.environ.get('EXTERNAL_STORAGE', ''),
+        '/storage/emulated/0',
+        '/sdcard',
+    ]:
+        if base:
+            try:
+                p = Path(base) / 'Invoices'
+                p.mkdir(parents=True, exist_ok=True)
+                return p
+            except (PermissionError, OSError):
+                continue
+
+    # Fallback for desktop or when external storage is not accessible
     if hasattr(sys, '_MEIPASS'):
-        # Packaged app: prefer HOME (persistent on Android)
         home_dir = os.environ.get("HOME") or os.path.expanduser("~")
         if home_dir and home_dir != "~":
             try:
-                p = Path(home_dir) / ".invoice_app" / "invoices"
+                p = Path(home_dir) / "Invoices"
                 p.mkdir(parents=True, exist_ok=True)
                 return p
             except (PermissionError, OSError):
@@ -37,15 +52,6 @@ def get_output_dir(custom_dir: str = "") -> Path:
         try:
             local_dir.mkdir(parents=True, exist_ok=True)
             return local_dir
-        except (PermissionError, OSError):
-            pass
-
-    home_dir = os.environ.get("HOME")
-    if home_dir:
-        try:
-            p = Path(home_dir) / "invoices"
-            p.mkdir(parents=True, exist_ok=True)
-            return p
         except (PermissionError, OSError):
             pass
 
