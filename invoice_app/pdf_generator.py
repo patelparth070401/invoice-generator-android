@@ -7,14 +7,23 @@ import decimal
 
 from .models import Invoice, ConfigManager
 
+def _is_writable_dir(p: Path) -> bool:
+    """Check if a directory is actually writable by creating a temporary file."""
+    try:
+        p.mkdir(parents=True, exist_ok=True)
+        test_file = p / ".write_test"
+        test_file.write_text("test")
+        test_file.unlink()
+        return True
+    except (PermissionError, OSError):
+        return False
+
+
 def get_output_dir(custom_dir: str = "") -> Path:
     if custom_dir:
-        try:
-            p = Path(custom_dir)
-            p.mkdir(parents=True, exist_ok=True)
+        p = Path(custom_dir)
+        if _is_writable_dir(p):
             return p
-        except (PermissionError, OSError):
-            pass
 
     # Primary: Android external storage — try several well-known paths so the
     # folder is visible in the Files app and accessible to other apps.
@@ -24,39 +33,44 @@ def get_output_dir(custom_dir: str = "") -> Path:
         '/sdcard',
     ]:
         if base:
-            try:
-                p = Path(base) / 'Invoices'
-                p.mkdir(parents=True, exist_ok=True)
+            p = Path(base) / 'Invoices'
+            if _is_writable_dir(p):
                 return p
-            except (PermissionError, OSError):
-                continue
+
+    # App-private storage on Android (accessible without special permissions)
+    for env_var in ['FLET_APP_STORAGE_DATA', 'ANDROID_APP_DATA', 'XDG_DATA_HOME']:
+        app_dir = os.environ.get(env_var, '')
+        if app_dir:
+            p = Path(app_dir) / 'Invoices'
+            if _is_writable_dir(p):
+                return p
 
     # Fallback for desktop or when external storage is not accessible
     if hasattr(sys, '_MEIPASS'):
         home_dir = os.environ.get("HOME") or os.path.expanduser("~")
         if home_dir and home_dir != "~":
-            try:
-                p = Path(home_dir) / "Invoices"
-                p.mkdir(parents=True, exist_ok=True)
+            p = Path(home_dir) / "Invoices"
+            if _is_writable_dir(p):
                 return p
-            except (PermissionError, OSError):
-                pass
-        try:
-            p = Path(sys.executable).parent / "data" / "invoices"
-            p.mkdir(parents=True, exist_ok=True)
+        p = Path(sys.executable).parent / "data" / "invoices"
+        if _is_writable_dir(p):
             return p
-        except (PermissionError, OSError):
-            pass
     else:
         local_dir = Path(__file__).parent.parent / "data" / "invoices"
-        try:
-            local_dir.mkdir(parents=True, exist_ok=True)
+        if _is_writable_dir(local_dir):
             return local_dir
-        except (PermissionError, OSError):
-            pass
+
+    # Home directory fallback
+    home_dir = os.environ.get("HOME") or os.path.expanduser("~")
+    if home_dir and home_dir != "~":
+        p = Path(home_dir) / "Invoices"
+        if _is_writable_dir(p):
+            return p
 
     import tempfile
-    return Path(tempfile.gettempdir()) / "invoices"
+    p = Path(tempfile.gettempdir()) / "invoices"
+    p.mkdir(parents=True, exist_ok=True)
+    return p
 
 def amount_in_words_inr(amount: float) -> str:
     NUM_WORDS_1_TO_19 = [
