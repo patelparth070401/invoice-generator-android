@@ -293,6 +293,7 @@ class ConfigManager:
             "invoice_prefix": "INV",
             "series_year": True,
             "series_width": 4,
+            "invoice_start_number": 32,
             # Email sending
             "smtp_host": "",
             "smtp_port": 587,
@@ -441,23 +442,20 @@ class InvoiceDB:
             print(f"Error retrieving unique customers: {e}")
         return customers
 
-    def get_next_invoice_number(self, prefix: str = "INV", series_year: bool = True, width: int = 4) -> str:
-        year = datetime.now().strftime('%Y')
+    def get_next_invoice_number(self, start_number: int = 32) -> str:
+        """Return next invoice number in format {seq}-{MM}/{YY} (e.g. 32-06/26)."""
+        import re
+        now = datetime.now()
+        mm = now.strftime('%m')
+        yy = now.strftime('%y')
+        pattern = re.compile(r'^(\d+)-\d{2}/\d{2}$')
         with sqlite3.connect(DB_PATH) as conn:
             cursor = conn.cursor()
-            like_pattern = f"{prefix}-{'%' if series_year else ''}%"
-            cursor.execute("SELECT invoice_number FROM invoices WHERE invoice_number LIKE ?", (like_pattern,))
+            cursor.execute("SELECT invoice_number FROM invoices")
             nums = []
             for (inv_num,) in cursor.fetchall():
-                try:
-                    parts = inv_num.split('-')
-                    n = int(parts[-1])
-                    if series_year:
-                        if len(parts) >= 3 and parts[-2] == year:
-                            nums.append(n)
-                    else:
-                        nums.append(n)
-                except Exception:
-                    pass
-            next_n = (max(nums) + 1) if nums else 1
-        return f"{prefix}-{year}-{str(next_n).zfill(width)}" if series_year else f"{prefix}-{str(next_n).zfill(width)}"
+                m = pattern.match(str(inv_num))
+                if m:
+                    nums.append(int(m.group(1)))
+            next_n = (max(nums) + 1) if nums else start_number
+        return f"{next_n}-{mm}/{yy}"
