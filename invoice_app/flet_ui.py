@@ -24,6 +24,19 @@ def _am_start(args: list) -> bool:
         return False
 
 
+def _is_writable_dir(d: str) -> bool:
+    """Check if a directory is actually writable by creating a temporary file."""
+    try:
+        os.makedirs(d, exist_ok=True)
+        test_file = os.path.join(d, ".write_test")
+        with open(test_file, "w") as f:
+            f.write("test")
+        os.unlink(test_file)
+        return True
+    except (PermissionError, OSError):
+        return False
+
+
 def _default_pdf_dir() -> str:
     """Return a sensible default PDF directory."""
     for base in [
@@ -33,21 +46,24 @@ def _default_pdf_dir() -> str:
     ]:
         if base and os.path.isdir(base):
             d = os.path.join(base, 'Invoices')
-            try:
-                os.makedirs(d, exist_ok=True)
+            if _is_writable_dir(d):
                 return d
-            except OSError:
-                continue
+    # App-private storage on Android (accessible without special permissions)
+    for env_var in ['FLET_APP_STORAGE_DATA', 'ANDROID_APP_DATA', 'XDG_DATA_HOME']:
+        app_dir = os.environ.get(env_var, '')
+        if app_dir:
+            d = os.path.join(app_dir, 'Invoices')
+            if _is_writable_dir(d):
+                return d
     home = os.environ.get("HOME") or os.path.expanduser("~")
     if home and home != "~":
         d = os.path.join(home, "Invoices")
-        try:
-            os.makedirs(d, exist_ok=True)
+        if _is_writable_dir(d):
             return d
-        except OSError:
-            pass
     import tempfile
-    return os.path.join(tempfile.gettempdir(), "Invoices")
+    d = os.path.join(tempfile.gettempdir(), "Invoices")
+    os.makedirs(d, exist_ok=True)
+    return d
 
 def main(page: ft.Page):
     try:
