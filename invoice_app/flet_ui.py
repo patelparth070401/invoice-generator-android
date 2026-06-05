@@ -4,6 +4,7 @@ from invoice_app.pdf_generator import generate_pdf
 import os
 import traceback
 import datetime
+import urllib.parse
 
 def main(page: ft.Page):
     try:
@@ -44,6 +45,22 @@ def main(page: ft.Page):
             value=str(config.get('invoice_start_number', 32)),
             keyboard_type=ft.KeyboardType.NUMBER
         )
+        pdf_dir_field = ft.TextField(
+            label="PDF Save Folder",
+            value=config.get('pdf_output_dir', ''),
+            hint_text="Tap 'Browse' or type a folder path",
+            expand=True,
+            read_only=False,
+        )
+
+        # FilePicker for choosing PDF save directory
+        def on_dir_result(e: ft.FilePickerResultEvent):
+            if e.path:
+                pdf_dir_field.value = e.path
+                pdf_dir_field.update()
+
+        dir_picker = ft.FilePicker(on_result=on_dir_result)
+        page.overlay.append(dir_picker)
 
         def save_settings(e):
             config.set('company_name', company_name.value)
@@ -56,12 +73,19 @@ def main(page: ft.Page):
             config.set('bank_account_number', bank_acc_no.value)
             config.set('bank_branch_name', bank_branch.value)
             config.set('bank_branch_ifsc', bank_ifsc.value)
+            config.set('pdf_output_dir', pdf_dir_field.value)
             try:
                 config.set('invoice_start_number', int(invoice_start_number.value))
             except ValueError:
                 pass
-            config.save()
-            page.snack_bar = ft.SnackBar(ft.Text("Settings saved successfully!"))
+            try:
+                config.save()
+                page.snack_bar = ft.SnackBar(ft.Text("Settings saved successfully!"))
+            except Exception as ex:
+                page.snack_bar = ft.SnackBar(
+                    ft.Text(f"Error saving settings: {ex}", color=ft.colors.WHITE),
+                    bgcolor=ft.colors.RED
+                )
             page.snack_bar.open = True
             page.update()
 
@@ -81,6 +105,16 @@ def main(page: ft.Page):
                     ft.Divider(),
                     ft.Text("Invoice Series", size=18, weight=ft.FontWeight.BOLD),
                     invoice_start_number,
+                    ft.Divider(),
+                    ft.Text("PDF Save Folder", size=18, weight=ft.FontWeight.BOLD),
+                    ft.Row([
+                        pdf_dir_field,
+                        ft.ElevatedButton(
+                            "Browse",
+                            icon=ft.icons.FOLDER_OPEN,
+                            on_click=lambda e: dir_picker.get_directory_path(dialog_title="Choose PDF Save Folder"),
+                        )
+                    ]),
                     ft.Divider(),
                     ft.ElevatedButton("Save Settings", on_click=save_settings, color=ft.colors.WHITE, bgcolor=ft.colors.GREEN)
                 ]
@@ -270,11 +304,12 @@ def main(page: ft.Page):
                 for i in line_items:
                     inv.add_item(i)
                 
-                # Save invoice to DB
-                db.save_invoice(inv)
+                # Generate PDF using user-configured output directory
+                pdf_out_dir = config.get('pdf_output_dir', '')
+                pdf_path = generate_pdf(inv, logo_path, output_dir=pdf_out_dir)
                 
-                # Generate PDF
-                pdf_path = generate_pdf(inv, logo_path)
+                # Save invoice to DB including pdf path
+                db.save_invoice(inv, pdf_path=pdf_path)
                 
                 page.snack_bar = ft.SnackBar(ft.Text(f"PDF saved: {pdf_path}"))
                 page.snack_bar.open = True
@@ -346,31 +381,88 @@ def main(page: ft.Page):
         # ---------------------------------------------------------
         history_list = ft.ListView(expand=True, spacing=10)
 
-        def open_history_pdf(inv_num):
+        def _open_pdf(pdf_path: str):
+            """Try to open the PDF; show path in snackbar if launch_url fails."""
+            if not pdf_path or not os.path.exists(pdf_path):
+                page.snack_bar = ft.SnackBar(ft.Text("PDF file not found."))
+                page.snack_bar.open = True
+                page.update()
+                return
+            try:
+                page.launch_url(f"file://{pdf_path}")
+            except Exception:
+                pass
+            page.snack_bar = ft.SnackBar(ft.Text(f"PDF location: {pdf_path}", selectable=True))
+            page.snack_bar.open = True
+            page.update()
+
+        def _share_whatsapp(inv_num: str, pdf_path: str):
+            text = urllib.parse.quote(f"Invoice {inv_num}\nFile: {pdf_path}")
+            try:
+                page.launch_url(f"whatsapp://send?text={text}")
+            except Exception:
+                page.launch_url(f"https://wa.me/?text={text}")
+
+        def _share_gmail(inv_num: str, customer: str, pdf_path: str):
+            subject = urllib.parse.quote(f"Invoice {inv_num}")
+            body = urllib.parse.quote(f"Dear {customer},\n\nPlease find Invoice {inv_num}.\nFile saved at: {pdf_path}\n\nRegards")
+            page.launch_url(f"mailto:?subject={subject}&body={body}")
+
+        def open_history_pdf(inv_num: str):
+            """Regenerate PDF (in case file was deleted) and open it."""
+            pdf_path = db.get_invoice_pdf_path(inv_num)
+            if pdf_path and os.path.exists(pdf_path):
+                _open_pdf(pdf_path)
+                return
+            # Regenerate if missing
             inv = db.get_invoice(inv_num)
             if inv:
-                pdf_path = generate_pdf(inv, logo_path)
+                pdf_out_dir = config.get('pdf_output_dir', '')
                 try:
-                    page.launch_url(f"file://{pdf_path}")
-                except Exception:
-                    pass
+                    pdf_path = generate_pdf(inv, logo_path, output_dir=pdf_out_dir)
+                    db.save_invoice(inv, pdf_path=pdf_path)
+                    _open_pdf(pdf_path)
+                except Exception as ex:
+                    page.snack_bar = ft.SnackBar(ft.Text(f"Error: {ex}"))
+                    page.snack_bar.open = True
+                    page.update()
 
         def refresh_history():
             history_list.controls.clear()
-            invoices = db.get_all_invoices()
+            invoices = db.get_all_invoices_with_paths()
             if not invoices:
                 history_list.controls.append(ft.Text("No generated invoices found."))
-            for inv in invoices:
+            for inv, pdf_path in invoices:
                 history_list.controls.append(
                     ft.Card(
                         content=ft.Container(
                             padding=10,
-                            content=ft.Row([
-                                ft.Column([
-                                    ft.Text(f"{inv.invoice_number}", weight=ft.FontWeight.BOLD),
-                                    ft.Text(f"{inv.customer_name} | Date: {inv.invoice_date}")
-                                ], expand=True),
-                                ft.IconButton(icon=ft.icons.OPEN_IN_NEW, on_click=lambda e, n=inv.invoice_number: open_history_pdf(n))
+                            content=ft.Column([
+                                ft.Row([
+                                    ft.Column([
+                                        ft.Text(f"{inv.invoice_number}", weight=ft.FontWeight.BOLD),
+                                        ft.Text(f"{inv.customer_name} | Date: {inv.invoice_date}")
+                                    ], expand=True),
+                                    ft.IconButton(
+                                        icon=ft.icons.OPEN_IN_NEW,
+                                        tooltip="Open PDF",
+                                        on_click=lambda e, n=inv.invoice_number: open_history_pdf(n)
+                                    )
+                                ]),
+                                ft.Row([
+                                    ft.OutlinedButton(
+                                        text="WhatsApp",
+                                        icon=ft.icons.SHARE,
+                                        on_click=lambda e, n=inv.invoice_number, p=pdf_path: _share_whatsapp(n, p),
+                                        style=ft.ButtonStyle(color=ft.colors.GREEN),
+                                    ),
+                                    ft.OutlinedButton(
+                                        text="Gmail",
+                                        icon=ft.icons.EMAIL,
+                                        on_click=lambda e, n=inv.invoice_number, c=inv.customer_name, p=pdf_path: _share_gmail(n, c, p),
+                                        style=ft.ButtonStyle(color=ft.colors.RED),
+                                    ),
+                                ], spacing=8)
                             ])
                         )
                     )
@@ -407,6 +499,51 @@ def main(page: ft.Page):
                 expand=True
             )
         )
+
+        # ---------------------------------------------------------
+        # FIRST-RUN: ask for PDF save folder if not yet configured
+        # ---------------------------------------------------------
+        def _on_first_run_dir_result(e: ft.FilePickerResultEvent):
+            chosen = e.path or ""
+            if chosen:
+                config.set('pdf_output_dir', chosen)
+                try:
+                    config.save()
+                except Exception:
+                    pass
+                pdf_dir_field.value = chosen
+                pdf_dir_field.update()
+
+        first_run_dir_picker = ft.FilePicker(on_result=_on_first_run_dir_result)
+        page.overlay.append(first_run_dir_picker)
+
+        if not config.get('pdf_output_dir', ''):
+            first_run_dlg = ft.AlertDialog(
+                modal=True,
+                title=ft.Text("Choose PDF Save Folder"),
+                content=ft.Text(
+                    "Please choose where you want to save all generated invoices (PDFs).\n"
+                    "You can change this later in Settings."
+                ),
+                actions=[
+                    ft.TextButton(
+                        "Choose Folder",
+                        on_click=lambda e: (
+                            setattr(first_run_dlg, 'open', False),
+                            page.update(),
+                            first_run_dir_picker.get_directory_path(dialog_title="Choose PDF Save Folder"),
+                        )
+                    ),
+                    ft.TextButton(
+                        "Use Default",
+                        on_click=lambda e: setattr(first_run_dlg, 'open', False) or page.update()
+                    ),
+                ],
+            )
+            page.dialog = first_run_dlg
+            first_run_dlg.open = True
+            page.update()
+
     except Exception as e:
         page.add(ft.SafeArea(ft.ListView([ft.Text(f"ERROR LAYOUT: {e}\n{traceback.format_exc()}", color="red", selectable=True)], expand=True)))
         return
