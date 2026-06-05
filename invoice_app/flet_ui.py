@@ -391,6 +391,7 @@ def main(page: ft.Page):
             try:
                 page.launch_url(f"file://{pdf_path}")
             except Exception:
+                # file:// launch may not be supported on all Android versions; fall through to show path
                 pass
             page.snack_bar = ft.SnackBar(ft.Text(f"PDF location: {pdf_path}", selectable=True))
             page.snack_bar.open = True
@@ -401,6 +402,7 @@ def main(page: ft.Page):
             try:
                 page.launch_url(f"whatsapp://send?text={text}")
             except Exception:
+                # Fall back to web WhatsApp if native scheme is unavailable
                 page.launch_url(f"https://wa.me/?text={text}")
 
         def _share_gmail(inv_num: str, customer: str, pdf_path: str):
@@ -525,21 +527,21 @@ def main(page: ft.Page):
                     "Please choose where you want to save all generated invoices (PDFs).\n"
                     "You can change this later in Settings."
                 ),
-                actions=[
-                    ft.TextButton(
-                        "Choose Folder",
-                        on_click=lambda e: (
-                            setattr(first_run_dlg, 'open', False),
-                            page.update(),
-                            first_run_dir_picker.get_directory_path(dialog_title="Choose PDF Save Folder"),
-                        )
-                    ),
-                    ft.TextButton(
-                        "Use Default",
-                        on_click=lambda e: setattr(first_run_dlg, 'open', False) or page.update()
-                    ),
-                ],
             )
+
+            def _choose_folder(e):
+                first_run_dlg.open = False
+                page.update()
+                first_run_dir_picker.get_directory_path(dialog_title="Choose PDF Save Folder")
+
+            def _use_default(e):
+                first_run_dlg.open = False
+                page.update()
+
+            first_run_dlg.actions = [
+                ft.TextButton("Choose Folder", on_click=_choose_folder),
+                ft.TextButton("Use Default", on_click=_use_default),
+            ]
             page.dialog = first_run_dlg
             first_run_dlg.open = True
             page.update()
