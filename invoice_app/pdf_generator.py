@@ -7,30 +7,50 @@ import decimal
 
 from .models import Invoice, ConfigManager
 
-def get_output_dir():
+def get_output_dir(custom_dir: str = "") -> Path:
+    if custom_dir:
+        try:
+            p = Path(custom_dir)
+            p.mkdir(parents=True, exist_ok=True)
+            return p
+        except (PermissionError, OSError):
+            pass
+
     if hasattr(sys, '_MEIPASS'):
-        return Path(sys.executable).parent / "data" / "invoices"
-    
-    local_dir = Path(__file__).parent.parent / "data" / "invoices"
-    try:
-        local_dir.mkdir(parents=True, exist_ok=True)
-        return local_dir
-    except (PermissionError, OSError):
-        pass
-        
+        # Packaged app: prefer HOME (persistent on Android)
+        home_dir = os.environ.get("HOME") or os.path.expanduser("~")
+        if home_dir and home_dir != "~":
+            try:
+                p = Path(home_dir) / ".invoice_app" / "invoices"
+                p.mkdir(parents=True, exist_ok=True)
+                return p
+            except (PermissionError, OSError):
+                pass
+        try:
+            p = Path(sys.executable).parent / "data" / "invoices"
+            p.mkdir(parents=True, exist_ok=True)
+            return p
+        except (PermissionError, OSError):
+            pass
+    else:
+        local_dir = Path(__file__).parent.parent / "data" / "invoices"
+        try:
+            local_dir.mkdir(parents=True, exist_ok=True)
+            return local_dir
+        except (PermissionError, OSError):
+            pass
+
     home_dir = os.environ.get("HOME")
     if home_dir:
         try:
-            android_dir = Path(home_dir) / "invoices"
-            android_dir.mkdir(parents=True, exist_ok=True)
-            return android_dir
+            p = Path(home_dir) / "invoices"
+            p.mkdir(parents=True, exist_ok=True)
+            return p
         except (PermissionError, OSError):
             pass
-            
+
     import tempfile
     return Path(tempfile.gettempdir()) / "invoices"
-
-OUTPUT_DIR = get_output_dir()
 
 def amount_in_words_inr(amount: float) -> str:
     NUM_WORDS_1_TO_19 = [
@@ -65,14 +85,15 @@ class InvoicePDF(FPDF):
         # We handle footers explicitly in the generation loop, so pass
         pass
 
-def generate_pdf(invoice: Invoice, logo_path: Optional[str] = None) -> str:
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+def generate_pdf(invoice: Invoice, logo_path: Optional[str] = None, output_dir: str = "") -> str:
+    out = get_output_dir(output_dir)
+    out.mkdir(parents=True, exist_ok=True)
 
     safe_invoice_number = (
         invoice.invoice_number.replace('/', '-').replace('\\', '-').replace(':', '-')
     )
     pdf_filename = f"{safe_invoice_number}.pdf"
-    pdf_path = OUTPUT_DIR / pdf_filename
+    pdf_path = out / pdf_filename
 
     # Replace ₹ with Rs. since fpdf core fonts are iso-8859-1
     rs = "Rs."

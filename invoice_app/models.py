@@ -14,27 +14,35 @@ from typing import List, Dict, Optional
 
 # Determine DATA_DIR based on environment
 def get_data_dir():
-    if hasattr(sys, '_MEIPASS'):
-        return Path(sys.executable).parent / "data"
-    
-    local_dir = Path(__file__).parent.parent / "data"
-    try:
-        local_dir.mkdir(parents=True, exist_ok=True)
-        return local_dir
-    except (PermissionError, OSError):
-        pass
-        
-    home_dir = os.environ.get("HOME")
-    if home_dir:
+    # Development mode: use project-relative data dir
+    if not hasattr(sys, '_MEIPASS'):
+        local_dir = Path(__file__).parent.parent / "data"
         try:
-            android_dir = Path(home_dir) / "data"
-            android_dir.mkdir(parents=True, exist_ok=True)
-            return android_dir
+            local_dir.mkdir(parents=True, exist_ok=True)
+            return local_dir
         except (PermissionError, OSError):
             pass
-            
+
+    # Packaged app (Android/desktop): prefer HOME which is persistent on Android
+    home_dir = os.environ.get("HOME") or os.path.expanduser("~")
+    if home_dir and home_dir != "~":
+        try:
+            app_dir = Path(home_dir) / ".invoice_app"
+            app_dir.mkdir(parents=True, exist_ok=True)
+            return app_dir
+        except (PermissionError, OSError):
+            pass
+
+    # Fallback: executable's parent directory (desktop packaged apps)
+    try:
+        exe_dir = Path(sys.executable).parent / "data"
+        exe_dir.mkdir(parents=True, exist_ok=True)
+        return exe_dir
+    except (PermissionError, OSError):
+        pass
+
     import tempfile
-    return Path(tempfile.gettempdir()) / "data"
+    return Path(tempfile.gettempdir()) / "invoice_app"
 
 DATA_DIR = get_data_dir()
 DB_PATH = DATA_DIR / "invoices.db"
@@ -295,6 +303,8 @@ class ConfigManager:
             "series_year": True,
             "series_width": 4,
             "invoice_start_number": 32,
+            # PDF output directory (configurable by user on first run)
+            "pdf_output_dir": "",
             # Email sending
             "smtp_host": "",
             "smtp_port": 587,
@@ -344,12 +354,18 @@ class InvoiceDB:
                 company_gstin TEXT,
                 pan_number TEXT,
                 data JSON NOT NULL,
+                pdf_path TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
             """)
+            # Migrate: add pdf_path column if it doesn't exist yet
+            try:
+                cursor.execute("ALTER TABLE invoices ADD COLUMN pdf_path TEXT")
+            except sqlite3.OperationalError:
+                pass  # Column already exists
             conn.commit()
 
-    def save_invoice(self, invoice: Invoice) -> bool:
+    def save_invoice(self, invoice: Invoice, pdf_path: str = "") -> bool:
         try:
             with sqlite3.connect(DB_PATH) as conn:
                 cursor = conn.cursor()
@@ -357,8 +373,8 @@ class InvoiceDB:
                     """
                     INSERT OR REPLACE INTO invoices
                     (invoice_number, invoice_date, company_name, company_address,
-                     customer_name, customer_address, company_gstin, pan_number, data)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     customer_name, customer_address, company_gstin, pan_number, data, pdf_path)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         invoice.invoice_number,
@@ -370,6 +386,7 @@ class InvoiceDB:
                         invoice.company_gstin,
                         invoice.pan_number,
                         json.dumps(invoice.to_dict(), ensure_ascii=False),
+                        pdf_path,
                     ),
                 )
                 conn.commit()
@@ -390,6 +407,19 @@ class InvoiceDB:
             print(f"Error retrieving invoice: {e}")
         return None
 
+    def get_invoice_pdf_path(self, invoice_number: str) -> str:
+        """Return the stored pdf_path for an invoice, or empty string if not found."""
+        try:
+            with sqlite3.connect(DB_PATH) as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT pdf_path FROM invoices WHERE invoice_number = ?", (invoice_number,))
+                row = cursor.fetchone()
+                if row:
+                    return row[0] or ""
+        except Exception as e:
+            print(f"Error retrieving pdf path: {e}")
+        return ""
+
     def get_all_invoices(self) -> List[Invoice]:
         try:
             with sqlite3.connect(DB_PATH) as conn:
@@ -398,6 +428,21 @@ class InvoiceDB:
                 return [Invoice.from_dict(json.loads(row[0])) for row in cursor.fetchall()]
         except Exception as e:
             print(f"Error retrieving invoices: {e}")
+        return []
+
+    def get_all_invoices_with_paths(self) -> List[tuple]:
+        """Return list of (Invoice, pdf_path) tuples ordered newest first."""
+        try:
+            with sqlite3.connect(DB_PATH) as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT data, pdf_path FROM invoices ORDER BY created_at DESC")
+                result = []
+                for row in cursor.fetchall():
+                    inv = Invoice.from_dict(json.loads(row[0]))
+                    result.append((inv, row[1] or ""))
+                return result
+        except Exception as e:
+            print(f"Error retrieving invoices with paths: {e}")
         return []
 
     def delete_invoice(self, invoice_number: str) -> bool:
