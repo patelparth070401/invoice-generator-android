@@ -2,6 +2,7 @@ import flet as ft
 from invoice_app.models import Invoice, LineItem, InvoiceDB, ConfigManager
 from invoice_app.pdf_generator import generate_pdf
 import os
+import re
 import shutil
 import subprocess
 import traceback
@@ -32,6 +33,67 @@ def _am_start(args: list) -> bool:
         return True
     except Exception:
         return False
+
+
+def _get_content_uri(file_path: str) -> str:
+    """Get a content:// URI for a file from Android's MediaStore.
+
+    On Android 7+ (API 24+), file:// URIs are blocked for inter-app
+    communication.  We query MediaStore for the file's _id and build a
+    content://media/external/file/<id> URI that any app can open.
+    """
+    if not _is_android() or not file_path:
+        return ""
+    try:
+        # Ensure MediaScanner has indexed the file first
+        _media_scan(file_path)
+
+        # Poll MediaStore with retries (MediaScanner may take a moment)
+        for _attempt in range(3):
+            import time
+            time.sleep(0.2)
+            try:
+                result = subprocess.run(
+                    ['content', 'query', '--uri', 'content://media/external/file',
+                     '--projection', '_id',
+                     '--where', f"_data='{file_path}'"],
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    timeout=5,
+                )
+                output = result.stdout.decode('utf-8', errors='ignore')
+                match = re.search(r'_id=(\d+)', output)
+                if match:
+                    return f"content://media/external/file/{match.group(1)}"
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    # Fallback: try inserting into MediaStore via content insert
+    try:
+        result = subprocess.run(
+            ['content', 'insert', '--uri', 'content://media/external/file',
+             '--bind', f'_data:s:{file_path}',
+             '--bind', 'mime_type:s:application/pdf'],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            timeout=5,
+        )
+        # Re-query after insert
+        result = subprocess.run(
+            ['content', 'query', '--uri', 'content://media/external/file',
+             '--projection', '_id',
+             '--where', f"_data='{file_path}'"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            timeout=5,
+        )
+        output = result.stdout.decode('utf-8', errors='ignore')
+        match = re.search(r'_id=(\d+)', output)
+        if match:
+            return f"content://media/external/file/{match.group(1)}"
+    except Exception:
+        pass
+
+    return ""
 
 
 def _is_writable_dir(d: str) -> bool:
@@ -205,8 +267,31 @@ def main(page: ft.Page):
         # FilePicker for choosing PDF save directory
         def on_dir_result(e: ft.FilePickerResultEvent):
             if e.path:
-                pdf_dir_field.value = e.path
+                chosen_path = e.path
+                # On Android, FilePicker may return SAF URIs — convert to
+                # a usable filesystem path or fall back to defaults
+                if chosen_path.startswith('content://'):
+                    # SAF URIs can't be used as filesystem paths;
+                    # extract a best-guess path or use default
+                    if 'primary:' in chosen_path:
+                        # content://...primary:Invoices → /storage/emulated/0/Invoices
+                        suffix = chosen_path.split('primary:')[-1]
+                        suffix = urllib.parse.unquote(suffix)
+                        chosen_path = os.path.join('/storage/emulated/0', suffix)
+                    else:
+                        # Can't resolve — use default
+                        chosen_path = _default_pdf_dir()
+                # Validate the chosen path is writable
+                if not _is_writable_dir(chosen_path):
+                    chosen_path = _default_pdf_dir()
+                    page.snack_bar = ft.SnackBar(
+                        ft.Text(f"Selected folder not writable. Using default: {chosen_path}"),
+                        duration=4000,
+                    )
+                    page.snack_bar.open = True
+                pdf_dir_field.value = chosen_path
                 pdf_dir_field.update()
+                page.update()
 
         dir_picker = ft.FilePicker(on_result=on_dir_result)
         page.overlay.append(dir_picker)
@@ -222,14 +307,29 @@ def main(page: ft.Page):
             config.set('bank_account_number', bank_acc_no.value)
             config.set('bank_branch_name', bank_branch.value)
             config.set('bank_branch_ifsc', bank_ifsc.value)
-            config.set('pdf_output_dir', pdf_dir_field.value)
+            # Validate and save PDF output directory
+            pdf_dir = pdf_dir_field.value.strip() if pdf_dir_field.value else ''
+            if pdf_dir:
+                # Handle SAF URIs that might have been pasted
+                if pdf_dir.startswith('content://'):
+                    if 'primary:' in pdf_dir:
+                        suffix = pdf_dir.split('primary:')[-1]
+                        suffix = urllib.parse.unquote(suffix)
+                        pdf_dir = os.path.join('/storage/emulated/0', suffix)
+                    else:
+                        pdf_dir = _default_pdf_dir()
+                # Validate the directory
+                if not _is_writable_dir(pdf_dir):
+                    pdf_dir = _default_pdf_dir()
+                    pdf_dir_field.value = pdf_dir
+            config.set('pdf_output_dir', pdf_dir)
             try:
                 config.set('invoice_start_number', int(invoice_start_number.value))
             except ValueError:
                 pass
             try:
                 config.save()
-                page.snack_bar = ft.SnackBar(ft.Text("Settings saved successfully!"))
+                page.snack_bar = ft.SnackBar(ft.Text(f"Settings saved! PDFs will save to: {pdf_dir or 'default location'}"))
             except Exception as ex:
                 page.snack_bar = ft.SnackBar(
                     ft.Text(f"Error saving settings: {ex}", color=ft.colors.WHITE),
@@ -465,7 +565,7 @@ def main(page: ft.Page):
                 # Save invoice to DB with the shared path (preferred) for later access
                 db.save_invoice(inv, pdf_path=shared_path)
                 
-                page.snack_bar = ft.SnackBar(ft.Text(f"Invoice saved to {shared_path}"))
+                page.snack_bar = ft.SnackBar(ft.Text(f"Invoice {inv.invoice_number} saved successfully!"))
                 page.snack_bar.open = True
                 
                 # Auto-increment invoice number
@@ -478,8 +578,9 @@ def main(page: ft.Page):
                 page.update()
             except Exception as ex:
                 page.snack_bar = ft.SnackBar(
-                    ft.Text(f"Error: {ex}", color=ft.colors.WHITE),
-                    bgcolor=ft.colors.RED
+                    ft.Text(f"Error generating invoice: {ex}", color=ft.colors.WHITE),
+                    bgcolor=ft.colors.RED,
+                    duration=6000,
                 )
                 page.snack_bar.open = True
                 page.update()
@@ -542,33 +643,35 @@ def main(page: ft.Page):
             shared_path = _copy_to_shared_storage(pdf_path)
             opened = False
 
-            # Primary: Android 'am start' command with shared path
             if _is_android():
-                opened = _am_start([
-                    '-a', 'android.intent.action.VIEW',
-                    '-d', f'file://{shared_path}',
-                    '-t', 'application/pdf',
-                    '--grant-read-uri-permission',
-                ])
+                # Primary: use content:// URI from MediaStore (required on Android 7+)
+                content_uri = _get_content_uri(shared_path)
+                if content_uri:
+                    opened = _am_start([
+                        '-a', 'android.intent.action.VIEW',
+                        '-d', content_uri,
+                        '-t', 'application/pdf',
+                        '--grant-read-uri-permission',
+                    ])
 
-            # Fallback 1: intent:// URL via Flet's launch_url
-            if not opened:
-                try:
-                    encoded_path = urllib.parse.quote(shared_path, safe='/')
-                    intent_url = (
-                        f"intent://{encoded_path}#Intent;"
-                        "scheme=file;"
-                        "action=android.intent.action.VIEW;"
-                        "type=application/pdf;"
-                        "launchFlags=0x10000001;"
-                        "end"
-                    )
-                    page.launch_url(intent_url)
-                    opened = True
-                except Exception:
-                    pass
+                # Fallback 1: try file:// with am start (works on older Android)
+                if not opened:
+                    opened = _am_start([
+                        '-a', 'android.intent.action.VIEW',
+                        '-d', f'file://{shared_path}',
+                        '-t', 'application/pdf',
+                        '--grant-read-uri-permission',
+                    ])
 
-            # Fallback 2: file:// URL
+                # Fallback 2: intent:// URL via Flet's launch_url with content URI
+                if not opened and content_uri:
+                    try:
+                        page.launch_url(content_uri)
+                        opened = True
+                    except Exception:
+                        pass
+
+            # Fallback 3: launch_url with file:// (desktop or last resort)
             if not opened:
                 try:
                     page.launch_url(f"file://{shared_path}")
@@ -591,8 +694,22 @@ def main(page: ft.Page):
             # Copy to shared storage so WhatsApp can access the file
             shared_path = _copy_to_shared_storage(pdf_path) if pdf_path else pdf_path
 
-            # Primary: Android 'am start' with file attachment (using shared path)
             if shared_path and os.path.exists(shared_path) and _is_android():
+                # Primary: use content:// URI (required on Android 7+)
+                content_uri = _get_content_uri(shared_path)
+                if content_uri:
+                    sent = _am_start([
+                        '-a', 'android.intent.action.SEND',
+                        '-t', 'application/pdf',
+                        '-p', 'com.whatsapp',
+                        '--es', 'android.intent.extra.TEXT', msg,
+                        '--eu', 'android.intent.extra.STREAM', content_uri,
+                        '--grant-read-uri-permission',
+                    ])
+                    if sent:
+                        return
+
+                # Fallback 1: file:// URI (works on older Android)
                 sent = _am_start([
                     '-a', 'android.intent.action.SEND',
                     '-t', 'application/pdf',
@@ -604,27 +721,19 @@ def main(page: ft.Page):
                 if sent:
                     return
 
-            # Fallback 1: intent:// URL (using shared path)
-            if shared_path and os.path.exists(shared_path):
-                stream = urllib.parse.quote(f"file://{shared_path}", safe='')
-                encoded_msg = urllib.parse.quote(msg)
-                intent_url = (
-                    "intent://send#Intent;"
-                    "action=android.intent.action.SEND;"
-                    "type=application/pdf;"
-                    "package=com.whatsapp;"
-                    f"S.android.intent.extra.TEXT={encoded_msg};"
-                    f"S.android.intent.extra.STREAM={stream};"
-                    "launchFlags=0x10000001;"
-                    "end"
-                )
-                try:
-                    page.launch_url(intent_url)
-                    return
-                except Exception:
-                    pass
+                # Fallback 2: try without package filter (any sharing app)
+                if content_uri:
+                    sent = _am_start([
+                        '-a', 'android.intent.action.SEND',
+                        '-t', 'application/pdf',
+                        '--es', 'android.intent.extra.TEXT', msg,
+                        '--eu', 'android.intent.extra.STREAM', content_uri,
+                        '--grant-read-uri-permission',
+                    ])
+                    if sent:
+                        return
 
-            # Fallback 2: WhatsApp web API (text only, tell user where PDF is)
+            # Fallback 3: WhatsApp web API (text only, tell user where PDF is)
             text_with_path = msg
             if shared_path:
                 text_with_path = f"{msg}\n\nInvoice PDF saved at: {shared_path}"
@@ -647,8 +756,23 @@ def main(page: ft.Page):
             # Copy to shared storage so Gmail can access the file
             shared_path = _copy_to_shared_storage(pdf_path) if pdf_path else pdf_path
 
-            # Primary: Android 'am start' with file attachment (using shared path)
             if shared_path and os.path.exists(shared_path) and _is_android():
+                # Primary: use content:// URI (required on Android 7+)
+                content_uri = _get_content_uri(shared_path)
+                if content_uri:
+                    sent = _am_start([
+                        '-a', 'android.intent.action.SEND',
+                        '-t', 'application/pdf',
+                        '-p', 'com.google.android.gm',
+                        '--es', 'android.intent.extra.SUBJECT', subject,
+                        '--es', 'android.intent.extra.TEXT', body_text,
+                        '--eu', 'android.intent.extra.STREAM', content_uri,
+                        '--grant-read-uri-permission',
+                    ])
+                    if sent:
+                        return
+
+                # Fallback 1: file:// URI (works on older Android)
                 sent = _am_start([
                     '-a', 'android.intent.action.SEND',
                     '-t', 'application/pdf',
@@ -661,29 +785,20 @@ def main(page: ft.Page):
                 if sent:
                     return
 
-            # Fallback 1: intent:// URL (using shared path)
-            if shared_path and os.path.exists(shared_path):
-                enc_subject = urllib.parse.quote(subject)
-                enc_body = urllib.parse.quote(body_text)
-                stream = urllib.parse.quote(f"file://{shared_path}", safe='')
-                intent_url = (
-                    "intent://send#Intent;"
-                    "action=android.intent.action.SEND;"
-                    "type=application/pdf;"
-                    "package=com.google.android.gm;"
-                    f"S.android.intent.extra.SUBJECT={enc_subject};"
-                    f"S.android.intent.extra.TEXT={enc_body};"
-                    f"S.android.intent.extra.STREAM={stream};"
-                    "launchFlags=0x10000001;"
-                    "end"
-                )
-                try:
-                    page.launch_url(intent_url)
-                    return
-                except Exception:
-                    pass
+                # Fallback 2: try generic email share with content URI
+                if content_uri:
+                    sent = _am_start([
+                        '-a', 'android.intent.action.SEND',
+                        '-t', 'message/rfc822',
+                        '--es', 'android.intent.extra.SUBJECT', subject,
+                        '--es', 'android.intent.extra.TEXT', body_text,
+                        '--eu', 'android.intent.extra.STREAM', content_uri,
+                        '--grant-read-uri-permission',
+                    ])
+                    if sent:
+                        return
 
-            # Fallback 2: mailto (no attachment)
+            # Fallback 3: mailto (no attachment)
             enc_subject = urllib.parse.quote(subject)
             enc_body = urllib.parse.quote(body_text)
             page.launch_url(f"mailto:?subject={enc_subject}&body={enc_body}")
@@ -708,8 +823,9 @@ def main(page: ft.Page):
                     _open_pdf(shared_path)
                 except Exception as ex:
                     page.snack_bar = ft.SnackBar(
-                        ft.Text(f"Error: {ex}", color=ft.colors.WHITE),
+                        ft.Text(f"Error generating PDF: {ex}", color=ft.colors.WHITE),
                         bgcolor=ft.colors.RED,
+                        duration=6000,
                     )
                     page.snack_bar.open = True
                     page.update()
@@ -786,6 +902,17 @@ def main(page: ft.Page):
             def on_first_dir_result(e: ft.FilePickerResultEvent):
                 if e.path:
                     chosen = e.path
+                    # Handle Android SAF URIs
+                    if chosen.startswith('content://'):
+                        if 'primary:' in chosen:
+                            suffix = chosen.split('primary:')[-1]
+                            suffix = urllib.parse.unquote(suffix)
+                            chosen = os.path.join('/storage/emulated/0', suffix)
+                        else:
+                            chosen = _default_pdf_dir()
+                    # Validate writability
+                    if not _is_writable_dir(chosen):
+                        chosen = _default_pdf_dir()
                 else:
                     # User cancelled → use a sensible default
                     chosen = _default_pdf_dir()
