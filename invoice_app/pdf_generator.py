@@ -140,8 +140,8 @@ def generate_pdf(invoice: Invoice, logo_path: Optional[str] = None, output_dir: 
     pdf_filename = f"{safe_invoice_number}.pdf"
     pdf_path = out / pdf_filename
 
-    # Use rupee symbol ₹
-    rs = "₹"
+    # Use "Rs. " for rupee since FPDF core fonts are iso-8859-1 (cannot encode ₹ symbol)
+    rs = "Rs. "
 
     # Subtotals
     subtotal    = sum(it.total_price for it in invoice.line_items)
@@ -311,19 +311,19 @@ def generate_pdf(invoice: Invoice, logo_path: Optional[str] = None, output_dir: 
 
     pdf.set_font('Arial', 'B', 9)
     pdf.cell(w_tot_label, 6, "Subtotal", border="LRT")
-    pdf.cell(w_tot_val, 6, f"{rs} {subtotal:.2f}", border="LRT", align="R", ln=1)
+    pdf.cell(w_tot_val, 6, f"{rs}{subtotal:.2f}", border="LRT", align="R", ln=1)
     
     pdf.cell(w_tot_label, 6, f"SGST ({sgst_eff:.2f}%)", border="LR")
-    pdf.cell(w_tot_val, 6, f"{rs} {sgst:.2f}", border="LR", align="R", ln=1)
+    pdf.cell(w_tot_val, 6, f"{rs}{sgst:.2f}", border="LR", align="R", ln=1)
     
     pdf.cell(w_tot_label, 6, f"CGST ({cgst_eff:.2f}%)", border="LR")
-    pdf.cell(w_tot_val, 6, f"{rs} {cgst:.2f}", border="LR", align="R", ln=1)
+    pdf.cell(w_tot_val, 6, f"{rs}{cgst:.2f}", border="LR", align="R", ln=1)
     
     pdf.cell(w_tot_label, 6, "Total Amount in INR", border="LR")
-    pdf.cell(w_tot_val, 6, f"{rs} {total:.2f}", border="LR", align="R", ln=1)
+    pdf.cell(w_tot_val, 6, f"{rs}{total:.2f}", border="LR", align="R", ln=1)
     
     pdf.cell(w_tot_label, 6, "Total Amount in INR (Round off)", border="LRB")
-    pdf.cell(w_tot_val, 6, f"{rs} {round_total:.2f}", border="LRB", align="R", ln=1)
+    pdf.cell(w_tot_val, 6, f"{rs}{round_total:.2f}", border="LRB", align="R", ln=1)
 
     # Amount in words
     words_text = txt(amount_in_words_inr(round_total))
