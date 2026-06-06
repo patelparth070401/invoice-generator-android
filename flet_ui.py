@@ -612,21 +612,14 @@ def main(page: ft.Page):
                     pdf_out_dir = _default_pdf_dir()
                 pdf_path = generate_pdf(inv, logo_path, output_dir=pdf_out_dir)
                 
-                # Copy to shared/public storage so it's visible in file managers
-                # (This is optional - if it fails, we keep the app-private version)
-                shared_path = _copy_to_shared_storage(pdf_path)
+                # PDF is already saved to the appropriate location (Downloads/Invoices on Android)
+                # No need to copy - save directly to database
+                db.save_invoice(inv, pdf_path=pdf_path)
                 
-                # Save invoice to DB with the shared path (preferred) for later access
-                db.save_invoice(inv, pdf_path=shared_path)
-                
-                # Determine where file actually ended up
-                file_location = "app storage"
-                if _is_android():
-                    if '/Download/' in shared_path or '/storage/emulated' in shared_path or '/sdcard' in shared_path:
-                        file_location = "Downloads folder"
-                
+                # Notify user
+                file_location = "Downloads/Invoices folder" if _is_android() else "storage"
                 page.snack_bar = ft.SnackBar(
-                    ft.Text(f"Invoice {inv.invoice_number} saved to {file_location}!"),
+                    ft.Text(f"Invoice {inv.invoice_number} saved successfully!"),
                     duration=4000
                 )
                 page.snack_bar.open = True
@@ -784,30 +777,27 @@ def main(page: ft.Page):
                 page.update()
 
         def _share_whatsapp(inv_num: str, pdf_path: str):
-            """Share invoice via WhatsApp with PDF attached and a short thank-you message."""
+            """Share invoice via WhatsApp with PDF attached."""
             msg = "Thank you"
             
             # Ensure we have a valid PDF
             if not pdf_path or not os.path.exists(pdf_path):
-                page.snack_bar = ft.SnackBar(ft.Text("PDF file not found for sharing."))
+                page.snack_bar = ft.SnackBar(ft.Text("PDF file not found."))
                 page.snack_bar.open = True
                 page.update()
                 return
 
-            # Copy to shared storage so WhatsApp can access the file
-            shared_path = _copy_to_shared_storage(pdf_path)
+            # Ensure file is indexed by media scanner
+            _media_scan(pdf_path)
+            
+            import time
+            time.sleep(0.3)
             
             sent = False
 
-            if _is_android() and shared_path and os.path.exists(shared_path):
-                # Ensure file is indexed
-                _media_scan(shared_path)
-                
-                import time
-                time.sleep(0.3)
-
+            if _is_android():
                 # Primary: use content:// URI (required on Android 7+)
-                content_uri = _get_content_uri(shared_path)
+                content_uri = _get_content_uri(pdf_path)
                 if content_uri:
                     sent = _am_start([
                         '-a', 'android.intent.action.SEND',
@@ -818,59 +808,37 @@ def main(page: ft.Page):
                         '--grant-read-uri-permission',
                     ])
                     if sent:
-                        page.snack_bar = ft.SnackBar(ft.Text("Sending to WhatsApp..."))
+                        page.snack_bar = ft.SnackBar(ft.Text("Opening WhatsApp with PDF..."))
                         page.snack_bar.open = True
                         page.update()
                         return
 
-                # Fallback 1: file:// URI (works on older Android and some devices)
+                # Fallback: file:// URI (works on some devices)
                 if not sent:
                     sent = _am_start([
                         '-a', 'android.intent.action.SEND',
                         '-t', 'application/pdf',
                         '-p', 'com.whatsapp',
                         '--es', 'android.intent.extra.TEXT', msg,
-                        '--eu', 'android.intent.extra.STREAM', f'file://{shared_path}',
+                        '--eu', 'android.intent.extra.STREAM', f'file://{pdf_path}',
                     ])
                     if sent:
-                        page.snack_bar = ft.SnackBar(ft.Text("Sending to WhatsApp..."))
+                        page.snack_bar = ft.SnackBar(ft.Text("Opening WhatsApp with PDF..."))
                         page.snack_bar.open = True
                         page.update()
                         return
 
-                # Fallback 2: Try generic share action if package name fails
-                if not sent and content_uri:
-                    sent = _am_start([
-                        '-a', 'android.intent.action.SEND',
-                        '-t', 'application/pdf',
-                        '--es', 'android.intent.extra.TEXT', msg,
-                        '--eu', 'android.intent.extra.STREAM', content_uri,
-                        '--grant-read-uri-permission',
-                    ])
-                    if sent:
-                        page.snack_bar = ft.SnackBar(ft.Text("Sending via share menu..."))
-                        page.snack_bar.open = True
-                        page.update()
-                        return
-
-            # Fallback 3: WhatsApp web API (text only, tell user where PDF is)
-            try:
-                text_with_path = f"{msg}\n\nInvoice: {inv_num}\nPDF saved at: {shared_path}" if shared_path else msg
-                encoded = urllib.parse.quote(text_with_path)
-                page.launch_url(f"https://api.whatsapp.com/send?text={encoded}")
-                page.snack_bar = ft.SnackBar(ft.Text("Opening WhatsApp Web..."))
-                page.snack_bar.open = True
-                page.update()
-            except Exception as e:
-                page.snack_bar = ft.SnackBar(
-                    ft.Text(f"Error opening WhatsApp: {str(e)[:100]}", color=ft.colors.WHITE),
-                    bgcolor=ft.colors.RED
-                )
-                page.snack_bar.open = True
-                page.update()
+            # If failed
+            page.snack_bar = ft.SnackBar(
+                ft.Text("Failed to open WhatsApp. Please share manually.", color=ft.colors.WHITE),
+                bgcolor=ft.colors.RED,
+                duration=5000
+            )
+            page.snack_bar.open = True
+            page.update()
 
         def _share_gmail(inv_num: str, customer: str, pdf_path: str):
-            """Share invoice via Gmail with PDF attached and a professional message."""
+            """Share invoice via Gmail with PDF attached."""
             subject = f"Invoice {inv_num}"
             body_text = (
                 f"Dear {customer},\n\n"
@@ -881,25 +849,22 @@ def main(page: ft.Page):
 
             # Ensure we have a valid PDF
             if not pdf_path or not os.path.exists(pdf_path):
-                page.snack_bar = ft.SnackBar(ft.Text("PDF file not found for sharing."))
+                page.snack_bar = ft.SnackBar(ft.Text("PDF file not found."))
                 page.snack_bar.open = True
                 page.update()
                 return
 
-            # Copy to shared storage so Gmail can access the file
-            shared_path = _copy_to_shared_storage(pdf_path)
+            # Ensure file is indexed by media scanner
+            _media_scan(pdf_path)
+            
+            import time
+            time.sleep(0.3)
             
             sent = False
 
-            if _is_android() and shared_path and os.path.exists(shared_path):
-                # Ensure file is indexed
-                _media_scan(shared_path)
-                
-                import time
-                time.sleep(0.3)
-
+            if _is_android():
                 # Primary: use content:// URI (required on Android 7+)
-                content_uri = _get_content_uri(shared_path)
+                content_uri = _get_content_uri(pdf_path)
                 if content_uri:
                     sent = _am_start([
                         '-a', 'android.intent.action.SEND',
@@ -911,12 +876,12 @@ def main(page: ft.Page):
                         '--grant-read-uri-permission',
                     ])
                     if sent:
-                        page.snack_bar = ft.SnackBar(ft.Text("Sending to Gmail..."))
+                        page.snack_bar = ft.SnackBar(ft.Text("Opening Gmail with PDF..."))
                         page.snack_bar.open = True
                         page.update()
                         return
 
-                # Fallback 1: file:// URI (works on older Android and some devices)
+                # Fallback: file:// URI (works on some devices)
                 if not sent:
                     sent = _am_start([
                         '-a', 'android.intent.action.SEND',
@@ -924,45 +889,22 @@ def main(page: ft.Page):
                         '-p', 'com.google.android.gm',
                         '--es', 'android.intent.extra.SUBJECT', subject,
                         '--es', 'android.intent.extra.TEXT', body_text,
-                        '--eu', 'android.intent.extra.STREAM', f'file://{shared_path}',
+                        '--eu', 'android.intent.extra.STREAM', f'file://{pdf_path}',
                     ])
                     if sent:
-                        page.snack_bar = ft.SnackBar(ft.Text("Sending to Gmail..."))
+                        page.snack_bar = ft.SnackBar(ft.Text("Opening Gmail with PDF..."))
                         page.snack_bar.open = True
                         page.update()
                         return
 
-                # Fallback 2: Try generic email share with content URI
-                if not sent and content_uri:
-                    sent = _am_start([
-                        '-a', 'android.intent.action.SEND',
-                        '-t', 'message/rfc822',
-                        '--es', 'android.intent.extra.SUBJECT', subject,
-                        '--es', 'android.intent.extra.TEXT', body_text,
-                        '--eu', 'android.intent.extra.STREAM', content_uri,
-                        '--grant-read-uri-permission',
-                    ])
-                    if sent:
-                        page.snack_bar = ft.SnackBar(ft.Text("Sending via email..."))
-                        page.snack_bar.open = True
-                        page.update()
-                        return
-
-            # Fallback 3: mailto (no attachment, but at least get user to email app)
-            enc_subject = urllib.parse.quote(subject)
-            enc_body = urllib.parse.quote(body_text + f"\n\nPDF: {shared_path}" if shared_path else body_text)
-            try:
-                page.launch_url(f"mailto:?subject={enc_subject}&body={enc_body}")
-                page.snack_bar = ft.SnackBar(ft.Text("Opening email app..."))
-                page.snack_bar.open = True
-                page.update()
-            except Exception as e:
-                page.snack_bar = ft.SnackBar(
-                    ft.Text(f"Error opening email: {str(e)[:100]}", color=ft.colors.WHITE),
-                    bgcolor=ft.colors.RED
-                )
-                page.snack_bar.open = True
-                page.update()
+            # If failed
+            page.snack_bar = ft.SnackBar(
+                ft.Text("Failed to open Gmail. Please share manually.", color=ft.colors.WHITE),
+                bgcolor=ft.colors.RED,
+                duration=5000
+            )
+            page.snack_bar.open = True
+            page.update()
 
         def open_history_pdf(inv_num: str):
             """Regenerate PDF (in case file was deleted) and open it."""
@@ -978,10 +920,9 @@ def main(page: ft.Page):
                     pdf_out_dir = _default_pdf_dir()
                 try:
                     pdf_path = generate_pdf(inv, logo_path, output_dir=pdf_out_dir)
-                    # Copy to shared storage and save the shared path
-                    shared_path = _copy_to_shared_storage(pdf_path)
-                    db.save_invoice(inv, pdf_path=shared_path)
-                    _open_pdf(shared_path)
+                    # PDF is already saved to the appropriate location
+                    db.save_invoice(inv, pdf_path=pdf_path)
+                    _open_pdf(pdf_path)
                 except Exception as ex:
                     page.snack_bar = ft.SnackBar(
                         ft.Text(f"Error generating PDF: {ex}", color=ft.colors.WHITE),
