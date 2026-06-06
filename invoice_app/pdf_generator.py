@@ -167,16 +167,16 @@ def generate_pdf(invoice: Invoice, logo_path: Optional[str] = None, output_dir: 
     # Draw header (increased height for better logo visibility)
     pdf.set_font('Arial', 'B', 14)
     # Tax Invoice text
-    pdf.cell(page_w * 0.75, 16, 'Tax Invoice', border=1, align='C')
+    pdf.cell(page_w * 0.75, 22, 'Tax Invoice', border=1, align='C', valign='M')
     # Logo Box
     x_logo_box = pdf.get_x()
     y_logo_box = pdf.get_y()
-    pdf.cell(page_w * 0.25, 16, '', border=1, ln=1, align='C')
+    pdf.cell(page_w * 0.25, 22, '', border=1, ln=1, align='C', valign='M')
     
     if logo_path and os.path.exists(logo_path):
         try:
             # fpdf handles jpg, png natively
-            pdf.image(logo_path, x=x_logo_box + 2, y=y_logo_box + 2, w=page_w * 0.25 - 4, h=12)
+            pdf.image(logo_path, x=x_logo_box + 2, y=y_logo_box + 2, w=page_w * 0.25 - 4, h=18)
         except Exception:
             pass
 
