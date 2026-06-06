@@ -28,8 +28,32 @@ def get_output_dir(custom_dir: str = "") -> Path:
     # Check if running on Android
     is_android = os.path.exists('/system/bin/am') or 'ANDROID_ROOT' in os.environ
 
-    # On Android, ALWAYS prioritize app-private storage first (requires NO special permissions)
+    # On Android, PRIORITIZE Downloads/Invoices folder (visible to user)
     if is_android:
+        common_bases = [
+            '/storage/emulated/0',
+            os.environ.get('EXTERNAL_STORAGE', ''),
+            '/sdcard',
+            '/storage/self/primary',
+        ]
+        
+        # Try Download/Invoices first (most visible)
+        for base in common_bases:
+            if not base or base == '':
+                continue
+            p = Path(base) / 'Download' / 'Invoices'
+            if _is_writable_dir(p):
+                return p
+        
+        # Fallback: root-level Invoices folder
+        for base in common_bases:
+            if not base or base == '':
+                continue
+            p = Path(base) / 'Invoices'
+            if _is_writable_dir(p):
+                return p
+        
+        # Fallback to app-private storage (if external storage not accessible)
         for env_var in ['FLET_APP_STORAGE_DATA', 'ANDROID_APP_DATA', 'XDG_DATA_HOME']:
             app_dir = os.environ.get(env_var, '')
             if app_dir:
@@ -116,8 +140,8 @@ def generate_pdf(invoice: Invoice, logo_path: Optional[str] = None, output_dir: 
     pdf_filename = f"{safe_invoice_number}.pdf"
     pdf_path = out / pdf_filename
 
-    # Replace ₹ with Rs. since fpdf core fonts are iso-8859-1
-    rs = "Rs."
+    # Use rupee symbol ₹
+    rs = "₹"
 
     # Subtotals
     subtotal    = sum(it.total_price for it in invoice.line_items)
@@ -140,19 +164,19 @@ def generate_pdf(invoice: Invoice, logo_path: Optional[str] = None, output_dir: 
         # Filter unprintable characters if any
         return str(t).encode('iso-8859-1', 'ignore').decode('iso-8859-1')
 
-    # Draw header
+    # Draw header (increased height for better logo visibility)
     pdf.set_font('Arial', 'B', 14)
     # Tax Invoice text
-    pdf.cell(page_w * 0.75, 10, 'Tax Invoice', border=1, align='C')
+    pdf.cell(page_w * 0.75, 16, 'Tax Invoice', border=1, align='C')
     # Logo Box
     x_logo_box = pdf.get_x()
     y_logo_box = pdf.get_y()
-    pdf.cell(page_w * 0.25, 10, '', border=1, ln=1, align='C')
+    pdf.cell(page_w * 0.25, 16, '', border=1, ln=1, align='C')
     
     if logo_path and os.path.exists(logo_path):
         try:
             # fpdf handles jpg, png natively
-            pdf.image(logo_path, x=x_logo_box + 2, y=y_logo_box + 1, w=page_w * 0.25 - 4, h=8)
+            pdf.image(logo_path, x=x_logo_box + 2, y=y_logo_box + 2, w=page_w * 0.25 - 4, h=12)
         except Exception:
             pass
 
@@ -287,19 +311,19 @@ def generate_pdf(invoice: Invoice, logo_path: Optional[str] = None, output_dir: 
 
     pdf.set_font('Arial', 'B', 9)
     pdf.cell(w_tot_label, 6, "Subtotal", border="LRT")
-    pdf.cell(w_tot_val, 6, f"{rs}{subtotal:.2f}", border="LRT", align="R", ln=1)
+    pdf.cell(w_tot_val, 6, f"{rs} {subtotal:.2f}", border="LRT", align="R", ln=1)
     
     pdf.cell(w_tot_label, 6, f"SGST ({sgst_eff:.2f}%)", border="LR")
-    pdf.cell(w_tot_val, 6, f"{rs}{sgst:.2f}", border="LR", align="R", ln=1)
+    pdf.cell(w_tot_val, 6, f"{rs} {sgst:.2f}", border="LR", align="R", ln=1)
     
     pdf.cell(w_tot_label, 6, f"CGST ({cgst_eff:.2f}%)", border="LR")
-    pdf.cell(w_tot_val, 6, f"{rs}{cgst:.2f}", border="LR", align="R", ln=1)
+    pdf.cell(w_tot_val, 6, f"{rs} {cgst:.2f}", border="LR", align="R", ln=1)
     
     pdf.cell(w_tot_label, 6, "Total Amount in INR", border="LR")
-    pdf.cell(w_tot_val, 6, f"{rs}{total:.2f}", border="LR", align="R", ln=1)
+    pdf.cell(w_tot_val, 6, f"{rs} {total:.2f}", border="LR", align="R", ln=1)
     
     pdf.cell(w_tot_label, 6, "Total Amount in INR (Round off)", border="LRB")
-    pdf.cell(w_tot_val, 6, f"{rs}{round_total:.2f}", border="LRB", align="R", ln=1)
+    pdf.cell(w_tot_val, 6, f"{rs} {round_total:.2f}", border="LRB", align="R", ln=1)
 
     # Amount in words
     words_text = txt(amount_in_words_inr(round_total))
