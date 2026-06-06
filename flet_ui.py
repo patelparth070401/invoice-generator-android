@@ -304,6 +304,7 @@ def main(page: ft.Page):
         bank_acc_no = ft.TextField(label="Account No", value=config.get('bank_account_number', ''))
         bank_branch = ft.TextField(label="Branch Name", value=config.get('bank_branch_name', ''))
         bank_ifsc = ft.TextField(label="Branch IFSC", value=config.get('bank_branch_ifsc', ''))
+        bank_address = ft.TextField(label="Branch Address", value=config.get('bank_branch_address', ''), multiline=True)
         invoice_start_number = ft.TextField(
             label="Invoice Start Number",
             value=str(config.get('invoice_start_number', 32)),
@@ -360,6 +361,7 @@ def main(page: ft.Page):
             config.set('bank_account_number', bank_acc_no.value)
             config.set('bank_branch_name', bank_branch.value)
             config.set('bank_branch_ifsc', bank_ifsc.value)
+            config.set('bank_branch_address', bank_address.value)
             # Validate and save PDF output directory
             pdf_dir = pdf_dir_field.value.strip() if pdf_dir_field.value else ''
             if pdf_dir:
@@ -403,7 +405,7 @@ def main(page: ft.Page):
                     company_name, company_address, company_gstin, pan_number, company_phone, company_email,
                     ft.Divider(),
                     ft.Text("Bank Details", size=18, weight=ft.FontWeight.BOLD),
-                    bank_acc_name, bank_acc_no, bank_branch, bank_ifsc,
+                    bank_acc_name, bank_acc_no, bank_branch, bank_ifsc, bank_address,
                     ft.Divider(),
                     ft.Text("Invoice Series", size=18, weight=ft.FontWeight.BOLD),
                     invoice_start_number,
@@ -602,6 +604,7 @@ def main(page: ft.Page):
                     bank_account_number=bank_acc_no.value,
                     bank_branch_name=bank_branch.value,
                     bank_branch_ifsc=bank_ifsc.value,
+                    bank_branch_address=bank_address.value,
                 )
                 for i in line_items:
                     inv.add_item(i)
@@ -796,37 +799,19 @@ def main(page: ft.Page):
             sent = False
 
             if _is_android():
-                # Primary: use content:// URI (required on Android 7+)
-                content_uri = _get_content_uri(pdf_path)
-                if content_uri:
-                    sent = _am_start([
-                        '-a', 'android.intent.action.SEND',
-                        '-t', 'application/pdf',
-                        '-p', 'com.whatsapp',
-                        '--es', 'android.intent.extra.TEXT', msg,
-                        '--eu', 'android.intent.extra.STREAM', content_uri,
-                        '--grant-read-uri-permission',
-                    ])
-                    if sent:
-                        page.snack_bar = ft.SnackBar(ft.Text("Opening WhatsApp with PDF..."))
-                        page.snack_bar.open = True
-                        page.update()
-                        return
-
-                # Fallback: file:// URI (works on some devices)
-                if not sent:
-                    sent = _am_start([
-                        '-a', 'android.intent.action.SEND',
-                        '-t', 'application/pdf',
-                        '-p', 'com.whatsapp',
-                        '--es', 'android.intent.extra.TEXT', msg,
-                        '--eu', 'android.intent.extra.STREAM', f'file://{pdf_path}',
-                    ])
-                    if sent:
-                        page.snack_bar = ft.SnackBar(ft.Text("Opening WhatsApp with PDF..."))
-                        page.snack_bar.open = True
-                        page.update()
-                        return
+                # Use file:// URI directly - files are in public Downloads folder
+                sent = _am_start([
+                    '-a', 'android.intent.action.SEND',
+                    '-t', 'application/pdf',
+                    '-p', 'com.whatsapp',
+                    '--es', 'android.intent.extra.TEXT', msg,
+                    '--eu', 'android.intent.extra.STREAM', f'file://{pdf_path}',
+                ])
+                if sent:
+                    page.snack_bar = ft.SnackBar(ft.Text("Opening WhatsApp with PDF..."))
+                    page.snack_bar.open = True
+                    page.update()
+                    return
 
             # If failed
             page.snack_bar = ft.SnackBar(
@@ -863,39 +848,20 @@ def main(page: ft.Page):
             sent = False
 
             if _is_android():
-                # Primary: use content:// URI (required on Android 7+)
-                content_uri = _get_content_uri(pdf_path)
-                if content_uri:
-                    sent = _am_start([
-                        '-a', 'android.intent.action.SEND',
-                        '-t', 'application/pdf',
-                        '-p', 'com.google.android.gm',
-                        '--es', 'android.intent.extra.SUBJECT', subject,
-                        '--es', 'android.intent.extra.TEXT', body_text,
-                        '--eu', 'android.intent.extra.STREAM', content_uri,
-                        '--grant-read-uri-permission',
-                    ])
-                    if sent:
-                        page.snack_bar = ft.SnackBar(ft.Text("Opening Gmail with PDF..."))
-                        page.snack_bar.open = True
-                        page.update()
-                        return
-
-                # Fallback: file:// URI (works on some devices)
-                if not sent:
-                    sent = _am_start([
-                        '-a', 'android.intent.action.SEND',
-                        '-t', 'application/pdf',
-                        '-p', 'com.google.android.gm',
-                        '--es', 'android.intent.extra.SUBJECT', subject,
-                        '--es', 'android.intent.extra.TEXT', body_text,
-                        '--eu', 'android.intent.extra.STREAM', f'file://{pdf_path}',
-                    ])
-                    if sent:
-                        page.snack_bar = ft.SnackBar(ft.Text("Opening Gmail with PDF..."))
-                        page.snack_bar.open = True
-                        page.update()
-                        return
+                # Use file:// URI directly - files are in public Downloads folder
+                sent = _am_start([
+                    '-a', 'android.intent.action.SEND',
+                    '-t', 'application/pdf',
+                    '-p', 'com.google.android.gm',
+                    '--es', 'android.intent.extra.SUBJECT', subject,
+                    '--es', 'android.intent.extra.TEXT', body_text,
+                    '--eu', 'android.intent.extra.STREAM', f'file://{pdf_path}',
+                ])
+                if sent:
+                    page.snack_bar = ft.SnackBar(ft.Text("Opening Gmail with PDF..."))
+                    page.snack_bar.open = True
+                    page.update()
+                    return
 
             # If failed
             page.snack_bar = ft.SnackBar(
