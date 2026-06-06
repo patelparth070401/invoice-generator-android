@@ -613,12 +613,22 @@ def main(page: ft.Page):
                 pdf_path = generate_pdf(inv, logo_path, output_dir=pdf_out_dir)
                 
                 # Copy to shared/public storage so it's visible in file managers
+                # (This is optional - if it fails, we keep the app-private version)
                 shared_path = _copy_to_shared_storage(pdf_path)
                 
                 # Save invoice to DB with the shared path (preferred) for later access
                 db.save_invoice(inv, pdf_path=shared_path)
                 
-                page.snack_bar = ft.SnackBar(ft.Text(f"Invoice {inv.invoice_number} saved successfully!"))
+                # Determine where file actually ended up
+                file_location = "app storage"
+                if _is_android():
+                    if '/Download/' in shared_path or '/storage/emulated' in shared_path or '/sdcard' in shared_path:
+                        file_location = "Downloads folder"
+                
+                page.snack_bar = ft.SnackBar(
+                    ft.Text(f"Invoice {inv.invoice_number} saved to {file_location}!"),
+                    duration=4000
+                )
                 page.snack_bar.open = True
                 
                 # Auto-increment invoice number
@@ -630,8 +640,15 @@ def main(page: ft.Page):
                 
                 page.update()
             except Exception as ex:
+                error_msg = str(ex)
+                # Simplify error message for users
+                if "Permission denied" in error_msg or "PermissionError" in error_msg:
+                    user_msg = "PDF saved to app storage (public storage access not available)"
+                else:
+                    user_msg = f"Error: {error_msg[:80]}"
+                
                 page.snack_bar = ft.SnackBar(
-                    ft.Text(f"Error generating invoice: {ex}", color=ft.colors.WHITE),
+                    ft.Text(user_msg, color=ft.colors.WHITE),
                     bgcolor=ft.colors.RED,
                     duration=6000,
                 )
