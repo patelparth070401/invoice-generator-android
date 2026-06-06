@@ -28,40 +28,24 @@ def get_output_dir(custom_dir: str = "") -> Path:
     # Check if running on Android
     is_android = os.path.exists('/system/bin/am') or 'ANDROID_ROOT' in os.environ
 
-    # Primary: Android external storage — prefer Download/Invoices so the
-    # folder is visible in the Files app and accessible to other apps.
+    # On Android, ALWAYS prioritize app-private storage first (requires NO special permissions)
     if is_android:
-        for base in [
-            os.environ.get('EXTERNAL_STORAGE', ''),
-            '/storage/emulated/0',
-            '/sdcard',
-        ]:
-            if base:
-                # Prefer Download subfolder (most visible on Android)
-                p = Path(base) / 'Download' / 'Invoices'
+        for env_var in ['FLET_APP_STORAGE_DATA', 'ANDROID_APP_DATA', 'XDG_DATA_HOME']:
+            app_dir = os.environ.get(env_var, '')
+            if app_dir:
+                p = Path(app_dir) / 'Invoices'
                 if _is_writable_dir(p):
                     return p
-                # Fallback: root-level Invoices folder
-                p = Path(base) / 'Invoices'
-                if _is_writable_dir(p):
-                    return p
-    else:
-        # Desktop: use home directory or project-relative path
+    
+    # Non-Android desktop: use home directory
+    if not is_android:
         home_dir = os.environ.get("HOME") or os.path.expanduser("~")
         if home_dir and home_dir != "~":
             p = Path(home_dir) / 'Invoices'
             if _is_writable_dir(p):
                 return p
 
-    # App-private storage on Android (accessible without special permissions)
-    for env_var in ['FLET_APP_STORAGE_DATA', 'ANDROID_APP_DATA', 'XDG_DATA_HOME']:
-        app_dir = os.environ.get(env_var, '')
-        if app_dir:
-            p = Path(app_dir) / 'Invoices'
-            if _is_writable_dir(p):
-                return p
-
-    # Fallback for desktop or when external storage is not accessible
+    # Fallback for PyInstaller apps
     if hasattr(sys, '_MEIPASS'):
         home_dir = os.environ.get("HOME") or os.path.expanduser("~")
         if home_dir and home_dir != "~":
@@ -83,6 +67,7 @@ def get_output_dir(custom_dir: str = "") -> Path:
         if _is_writable_dir(p):
             return p
 
+    # Last resort: temp directory
     import tempfile
     p = Path(tempfile.gettempdir()) / "invoices"
     p.mkdir(parents=True, exist_ok=True)
@@ -369,5 +354,21 @@ def generate_pdf(invoice: Invoice, logo_path: Optional[str] = None, output_dir: 
     pdf.set_font('Arial', 'I', 8)
     pdf.cell(page_w, 6, txt(invoice.jurisdiction_note), border=1, align="C", ln=1)
 
-    pdf.output(str(pdf_path))
+    # Try to save to the requested output directory
+    try:
+        pdf.output(str(pdf_path))
+    except (PermissionError, OSError) as e:
+        # If write fails (e.g., permission error), use app-private storage as fallback
+        import tempfile
+        fallback_dir = Path(tempfile.gettempdir()) / "invoices"
+        fallback_dir.mkdir(parents=True, exist_ok=True)
+        fallback_path = fallback_dir / pdf_filename
+        
+        try:
+            pdf.output(str(fallback_path))
+            pdf_path = fallback_path
+        except Exception as e2:
+            # Last resort: raise the original error
+            raise PermissionError(f"Failed to save PDF to {pdf_path}: {e}") from e
+    
     return str(pdf_path)
