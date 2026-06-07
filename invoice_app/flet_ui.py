@@ -543,6 +543,7 @@ def main(page: ft.Page):
         add_desc = ft.TextField(label="Description")
         add_hsn = ft.TextField(label="HSN")
         add_qty = ft.TextField(label="Qty", value="1")
+        add_uom = ft.TextField(label="UOM")
         add_price = ft.TextField(label="Unit Price", value="0.0")
         add_sgst = ft.TextField(label="SGST %", value="9")
         add_cgst = ft.TextField(label="CGST %", value="9")
