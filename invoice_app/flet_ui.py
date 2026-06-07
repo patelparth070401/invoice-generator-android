@@ -278,6 +278,12 @@ def main(page: ft.Page):
 
         db = InvoiceDB()
         config = ConfigManager()
+        # Native Flet share service: more reliable on Android than shell 'am start'
+        # because it opens the platform share sheet and grants file access correctly.
+        try:
+            share_service = ft.Share()
+        except Exception:
+            share_service = None
         
         # Try to load logo
         logo_path = config.get('logo_path', '')
@@ -632,8 +638,8 @@ def main(page: ft.Page):
                 # Notify user
                 file_location = "Downloads/Invoices folder" if _is_android() else "storage"
                 page.snack_bar = ft.SnackBar(
-                    ft.Text(f"Invoice {inv.invoice_number} saved successfully! Saved at: {pdf_path}"),
-                    duration=5000
+                    ft.Text(f"Invoice {inv.invoice_number} saved successfully!"),
+                    duration=4000
                 )
                 page.snack_bar.open = True
                 
@@ -789,55 +795,67 @@ def main(page: ft.Page):
                 page.snack_bar.open = True
                 page.update()
 
-        def _share_whatsapp(inv_num: str, pdf_path: str):
-            """Share invoice via WhatsApp with PDF attached."""
-            msg = "Thank you"
-            
-            # Ensure we have a valid PDF
+        async def _share_whatsapp(inv_num: str, pdf_path: str):
+            """Share invoice PDF. Opens Android share sheet; select WhatsApp/WhatsApp Business."""
+            msg = f"Invoice {inv_num}"
+
             if not pdf_path or not os.path.exists(pdf_path):
                 page.snack_bar = ft.SnackBar(ft.Text("PDF file not found."))
                 page.snack_bar.open = True
                 page.update()
                 return
 
-            # Copy to shared storage if needed and use content:// URI on Android 7+
             shared_path = _copy_to_shared_storage(pdf_path)
             _media_scan(shared_path)
-            
-            import time
-            time.sleep(0.5)
-            
-            sent = False
 
-            if _is_android():
-                share_uri = _get_content_uri(shared_path) or f'file://{shared_path}'
-                sent = _am_start([
-                    '-a', 'android.intent.action.SEND',
-                    '-t', 'application/pdf',
-                    '-p', 'com.whatsapp',
-                    '--grant-read-uri-permission',
-                    '--es', 'android.intent.extra.TEXT', msg,
-                    '--eu', 'android.intent.extra.STREAM', share_uri,
-                ])
-                if sent:
-                    page.snack_bar = ft.SnackBar(ft.Text("Opening WhatsApp with PDF..."))
+            # Preferred: Flet native share sheet (handles Android URI permissions)
+            if share_service and hasattr(ft, "ShareFile"):
+                try:
+                    await share_service.share_files(
+                        [ft.ShareFile.from_path(shared_path)],
+                        title="Share invoice on WhatsApp",
+                        text=msg,
+                        subject=f"Invoice {inv_num}",
+                    )
+                    page.snack_bar = ft.SnackBar(ft.Text("Share sheet opened. Select WhatsApp to send PDF."), duration=4000)
                     page.snack_bar.open = True
                     page.update()
                     return
+                except Exception:
+                    pass
 
-            # If failed
+            # Fallback: Android intent to WhatsApp / WhatsApp Business
+            if _is_android():
+                import time
+                time.sleep(0.5)
+                share_uri = _get_content_uri(shared_path) or f'file://{shared_path}'
+                for pkg in ["com.whatsapp", "com.whatsapp.w4b"]:
+                    sent = _am_start([
+                        '-a', 'android.intent.action.SEND',
+                        '-t', 'application/pdf',
+                        '-p', pkg,
+                        '--grant-read-uri-permission',
+                        '--es', 'android.intent.extra.TEXT', msg,
+                        '--eu', 'android.intent.extra.STREAM', share_uri,
+                    ])
+                    if sent:
+                        page.snack_bar = ft.SnackBar(ft.Text("Opening WhatsApp with PDF..."))
+                        page.snack_bar.open = True
+                        page.update()
+                        return
+
             page.snack_bar = ft.SnackBar(
-                ft.Text(f"Failed to open WhatsApp. PDF saved at: {shared_path}", color=ft.colors.WHITE),
+                ft.Text(f"Could not open WhatsApp automatically. PDF saved at: {shared_path}", color=ft.colors.WHITE),
                 bgcolor=ft.colors.RED,
-                duration=6000
+                duration=6000,
             )
             page.snack_bar.open = True
             page.update()
 
-        def _share_gmail(inv_num: str, customer: str, pdf_path: str):
-            """Share invoice via Gmail with PDF attached."""
-            subject = f"Invoice {inv_num}"
+        async def _share_gmail(inv_num: str, customer: str, pdf_path: str):
+            """Share invoice PDF. Opens Android share sheet; select Gmail."""
             sender_name = (company_name.value or config.get('company_name', '') or 'Company').strip()
+            subject = f"Invoice {inv_num}"
             body_text = (
                 f"Dear {customer},\n\n"
                 f"Please find invoice {inv_num} attached.\n\n"
@@ -845,23 +863,35 @@ def main(page: ft.Page):
                 f"{sender_name}"
             )
 
-            # Ensure we have a valid PDF
             if not pdf_path or not os.path.exists(pdf_path):
                 page.snack_bar = ft.SnackBar(ft.Text("PDF file not found."))
                 page.snack_bar.open = True
                 page.update()
                 return
 
-            # Copy to shared storage if needed and use content:// URI on Android 7+
             shared_path = _copy_to_shared_storage(pdf_path)
             _media_scan(shared_path)
-            
-            import time
-            time.sleep(0.5)
-            
-            sent = False
 
+            # Preferred: Flet native share sheet (handles Android URI permissions)
+            if share_service and hasattr(ft, "ShareFile"):
+                try:
+                    await share_service.share_files(
+                        [ft.ShareFile.from_path(shared_path)],
+                        title="Email invoice",
+                        text=body_text,
+                        subject=subject,
+                    )
+                    page.snack_bar = ft.SnackBar(ft.Text("Share sheet opened. Select Gmail to send PDF."), duration=4000)
+                    page.snack_bar.open = True
+                    page.update()
+                    return
+                except Exception:
+                    pass
+
+            # Fallback: Android intent to Gmail package
             if _is_android():
+                import time
+                time.sleep(0.5)
                 share_uri = _get_content_uri(shared_path) or f'file://{shared_path}'
                 sent = _am_start([
                     '-a', 'android.intent.action.SEND',
@@ -878,11 +908,10 @@ def main(page: ft.Page):
                     page.update()
                     return
 
-            # If failed
             page.snack_bar = ft.SnackBar(
-                ft.Text(f"Failed to open Gmail. PDF saved at: {shared_path}", color=ft.colors.WHITE),
+                ft.Text(f"Could not open Gmail automatically. PDF saved at: {shared_path}", color=ft.colors.WHITE),
                 bgcolor=ft.colors.RED,
-                duration=6000
+                duration=6000,
             )
             page.snack_bar.open = True
             page.update()
