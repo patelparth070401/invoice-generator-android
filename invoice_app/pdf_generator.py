@@ -140,7 +140,7 @@ def generate_pdf(invoice: Invoice, logo_path: Optional[str] = None, output_dir: 
     pdf_filename = f"{safe_invoice_number}.pdf"
     pdf_path = out / pdf_filename
 
-    # Use "Rs. " for rupee since FPDF core fonts are iso-8859-1 (cannot encode ₹ symbol)
+    # Rupee symbol is enabled below if a Unicode TTF font is available
     rs = "Rs. "
 
     # Subtotals
@@ -159,13 +159,55 @@ def generate_pdf(invoice: Invoice, logo_path: Optional[str] = None, output_dir: 
     
     page_w = pdf.w - 16  # total page width minus 8mm left and right margins
 
+    # ---------------------------------------------------------
+    # Unicode font setup for ₹ symbol and non-Latin safe text
+    # ---------------------------------------------------------
+    unicode_font_enabled = False
+    font_family = "Arial"
+    try:
+        configured_font = ConfigManager().get('font_path', '')
+    except Exception:
+        configured_font = ''
+
+    bundled_regular = Path(__file__).parent / "fonts" / "DejaVuSans.ttf"
+    bundled_bold = Path(__file__).parent / "fonts" / "DejaVuSans-Bold.ttf"
+    system_regular = Path('/usr/share/fonts/dejavu-sans-fonts/DejaVuSans.ttf')
+    system_bold = Path('/usr/share/fonts/dejavu-sans-fonts/DejaVuSans-Bold.ttf')
+
+    regular_font = Path(configured_font) if configured_font else bundled_regular
+    if not regular_font.exists():
+        regular_font = system_regular
+    bold_font = bundled_bold if bundled_bold.exists() else system_bold
+
+    if regular_font.exists():
+        try:
+            pdf.add_font('DejaVu', '', str(regular_font), uni=True)
+            if bold_font.exists():
+                pdf.add_font('DejaVu', 'B', str(bold_font), uni=True)
+            font_family = 'DejaVu'
+            unicode_font_enabled = True
+            rs = "₹ "
+        except Exception:
+            font_family = "Arial"
+            unicode_font_enabled = False
+            rs = "Rs. "
+
+    def set_pdf_font(style='', size=9):
+        try:
+            pdf.set_font(font_family, style, size)
+        except Exception:
+            pdf.set_font('Arial', style, size)
+
     def txt(t):
-        if not t: return ""
-        # Filter unprintable characters if any
-        return str(t).encode('iso-8859-1', 'ignore').decode('iso-8859-1')
+        if not t:
+            return ""
+        s = str(t)
+        if unicode_font_enabled:
+            return s
+        return s.encode('iso-8859-1', 'ignore').decode('iso-8859-1')
 
     # Draw header (increased height for better logo visibility)
-    pdf.set_font('Arial', 'B', 14)
+    set_pdf_font('B', 14)
     # Tax Invoice text
     pdf.cell(page_w * 0.75, 22, 'Tax Invoice', border=1, align='C')
     # Logo Box
@@ -185,24 +227,24 @@ def generate_pdf(invoice: Invoice, logo_path: Optional[str] = None, output_dir: 
     col1_w = page_w / 2
     col2_w = page_w / 2
     
-    pdf.set_font('Arial', 'B', 9)
+    set_pdf_font('B', 9)
     pdf.cell(28, 6, "Company Name:", border="L")
-    pdf.set_font('Arial', '', 9)
+    set_pdf_font('', 9)
     pdf.cell(col1_w - 28, 6, txt(invoice.company_name))
     
-    pdf.set_font('Arial', 'B', 9)
+    set_pdf_font('B', 9)
     pdf.cell(28, 6, "Invoice No:", border="L")
-    pdf.set_font('Arial', '', 9)
+    set_pdf_font('', 9)
     pdf.cell(col2_w - 28, 6, txt(invoice.invoice_number), border="R", ln=1)
     
-    pdf.set_font('Arial', 'B', 9)
+    set_pdf_font('B', 9)
     pdf.cell(28, 6, "ADDRESS:", border="L")
-    pdf.set_font('Arial', '', 9)
+    set_pdf_font('', 9)
     pdf.cell(col1_w - 28, 6, txt(invoice.company_address))
     
-    pdf.set_font('Arial', 'B', 9)
+    set_pdf_font('B', 9)
     pdf.cell(28, 6, "Invoice Date:", border="L")
-    pdf.set_font('Arial', '', 9)
+    set_pdf_font('', 9)
     pdf.cell(col2_w - 28, 6, txt(invoice.invoice_date), border="R", ln=1)
 
     left_labels = ['GSTIN:', 'Phone:', 'Email:', 'UDYAM REG NO:']
@@ -215,16 +257,16 @@ def generate_pdf(invoice: Invoice, logo_path: Optional[str] = None, output_dir: 
     if invoice.challan_date: right_fields.append(('Challan Date:', invoice.challan_date))
 
     for i in range(len(left_labels)):
-        pdf.set_font('Arial', 'B', 9)
+        set_pdf_font('B', 9)
         # We give a fixed width to label, then rest to value
         pdf.cell(30, 6, left_labels[i], border="L")
-        pdf.set_font('Arial', '', 9)
+        set_pdf_font('', 9)
         pdf.cell(col1_w - 30, 6, txt(left_values[i]))
         
-        pdf.set_font('Arial', 'B', 9)
+        set_pdf_font('B', 9)
         if i < len(right_fields):
             pdf.cell(30, 6, right_fields[i][0], border="L")
-            pdf.set_font('Arial', '', 9)
+            set_pdf_font('', 9)
             pdf.cell(col2_w - 30, 6, txt(right_fields[i][1]), border="R", ln=1)
         else:
             pdf.cell(30, 6, "", border="L")
@@ -240,9 +282,9 @@ def generate_pdf(invoice: Invoice, logo_path: Optional[str] = None, output_dir: 
     line1 = getattr(invoice, 'additional_info_line1', '').strip()
     line2 = getattr(invoice, 'additional_info_line2', '').strip()
     if line1 or line2:
-        pdf.set_font('Arial', 'B', 9)
+        set_pdf_font('B', 9)
         pdf.cell(page_w, 6, "Additional Information", border="LRT", ln=1)
-        pdf.set_font('Arial', '', 9)
+        set_pdf_font('', 9)
         if line1:
             pdf.cell(page_w, 6, txt(line1), border="LR", ln=1)
         if line2:
@@ -251,11 +293,11 @@ def generate_pdf(invoice: Invoice, logo_path: Optional[str] = None, output_dir: 
         pdf.ln(2)
 
     # Customer Section
-    pdf.set_font('Arial', 'B', 9)
+    set_pdf_font('B', 9)
     pdf.cell(col1_w, 6, "Invoice To", border="LRT")
     pdf.cell(col2_w, 6, "Ship To", border="LRT", ln=1)
     
-    pdf.set_font('Arial', '', 9)
+    set_pdf_font('', 9)
     inv_name = txt(invoice.customer_name)
     ship_name = txt(getattr(invoice, 'ship_to_name', ''))
     pdf.cell(col1_w, 6, inv_name, border="LR")
@@ -275,7 +317,7 @@ def generate_pdf(invoice: Invoice, logo_path: Optional[str] = None, output_dir: 
     # Items table header
     pdf.set_fill_color(255, 255, 255)
     pdf.set_text_color(0, 71, 171) # BLUE
-    pdf.set_font('Arial', 'B', 9)
+    set_pdf_font('B', 9)
     
     w_desc = page_w * (2.30/6.5)
     w_hsn = page_w * (0.90/6.5)
@@ -293,7 +335,7 @@ def generate_pdf(invoice: Invoice, logo_path: Optional[str] = None, output_dir: 
 
     # Items
     pdf.set_text_color(0, 0, 0)
-    pdf.set_font('Arial', '', 9)
+    set_pdf_font('', 9)
     for it in invoice.line_items:
         pdf.cell(w_desc, 6, txt(it.description), border="LR")
         pdf.cell(w_hsn, 6, txt(it.hsn), border="LR", align="R")
@@ -309,7 +351,7 @@ def generate_pdf(invoice: Invoice, logo_path: Optional[str] = None, output_dir: 
     w_tot_label = page_w * (4.5/6.5)
     w_tot_val = page_w * (2.0/6.5)
 
-    pdf.set_font('Arial', 'B', 9)
+    set_pdf_font('B', 9)
     pdf.cell(w_tot_label, 6, "Subtotal", border="LRT")
     pdf.cell(w_tot_val, 6, f"{rs}{subtotal:.2f}", border="LRT", align="R", ln=1)
     
@@ -327,9 +369,9 @@ def generate_pdf(invoice: Invoice, logo_path: Optional[str] = None, output_dir: 
 
     # Amount in words
     words_text = txt(amount_in_words_inr(round_total))
-    pdf.set_font('Arial', 'B', 9)
+    set_pdf_font('B', 9)
     pdf.cell(40, 8, "Total Amount In Words :", border="LBT")
-    pdf.set_font('Arial', '', 9)
+    set_pdf_font('', 9)
     pdf.cell(page_w - 40, 8, words_text, border="RBT", ln=1)
     pdf.cell(page_w, 6, "", border="LRBT", ln=1)
     
@@ -341,15 +383,15 @@ def generate_pdf(invoice: Invoice, logo_path: Optional[str] = None, output_dir: 
     y_start = pdf.get_y()
 
     # Draw bank details text
-    pdf.set_font('Arial', 'B', 9)
+    set_pdf_font('B', 9)
     pdf.cell(b_left_w, 6, "Bank Details", border="LRT", ln=2)
-    pdf.set_font('Arial', '', 9)
+    set_pdf_font('', 9)
     pdf.cell(b_left_w, 6, txt(f"Account Holder Name: {getattr(invoice, 'bank_account_holder_name', '')}"), border="LR", ln=2)
     pdf.cell(b_left_w, 6, txt(f"Account number: {invoice.bank_account_number}"), border="LR", ln=2)
     pdf.cell(b_left_w, 6, txt(f"Branch Name: {invoice.bank_branch_name}"), border="LR", ln=2)
     pdf.cell(b_left_w, 6, txt(f"Branch IFSC: {invoice.bank_branch_ifsc}"), border="LR", ln=2)
     pdf.cell(b_left_w, 6, txt(f"Branch Address: {invoice.bank_branch_address}"), border="LR", ln=2)
-    pdf.set_font('Arial', 'B', 9)
+    set_pdf_font('B', 9)
     pdf.cell(b_left_w, 6, txt(f"PAN No: {invoice.pan_number}"), border="LRB")
     
     # Move to right col for signatory
@@ -362,20 +404,20 @@ def generate_pdf(invoice: Invoice, logo_path: Optional[str] = None, output_dir: 
     h_left = (y_end - y_start) - 12
     if h_left < 0: h_left = 12
     pdf.cell(b_right_w, h_left, "", border="LR", ln=2)
-    pdf.set_font('Arial', '', 9)
+    set_pdf_font('', 9)
     pdf.cell(b_right_w, 6, "Authorised Signatory", border="LRB", align="C")
 
     # Reset position
     pdf.set_xy(x_start, y_end + 6)
     
     # Footer
-    pdf.set_font('Arial', 'B', 9)
+    set_pdf_font('B', 9)
     pdf.cell(page_w, 6, "Declaration", border="LRT", ln=1)
-    pdf.set_font('Arial', '', 9)
+    set_pdf_font('', 9)
     pdf.cell(page_w, 6, "We Declare that this invoice shows the actual price of the goods described", border="LR", ln=1)
     pdf.cell(page_w, 6, "and that all the particulars are the true and correct.", border="LRB", ln=1)
     
-    pdf.set_font('Arial', 'I', 8)
+    set_pdf_font('I', 8)
     pdf.cell(page_w, 6, txt(invoice.jurisdiction_note), border=1, align="C", ln=1)
 
     # Try to save to the requested output directory
