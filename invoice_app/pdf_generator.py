@@ -1,14 +1,14 @@
 import sys
 import os
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List
 from fpdf import FPDF
 import decimal
 
 from .models import Invoice, ConfigManager
 
+
 def _is_writable_dir(p: Path) -> bool:
-    """Check if a directory is actually writable by creating a temporary file."""
     try:
         p.mkdir(parents=True, exist_ok=True)
         test_file = p / ".write_test"
@@ -25,433 +25,342 @@ def get_output_dir(custom_dir: str = "") -> Path:
         if _is_writable_dir(p):
             return p
 
-    # Check if running on Android
     is_android = os.path.exists('/system/bin/am') or 'ANDROID_ROOT' in os.environ
-
-    # On Android, PRIORITIZE Downloads/Invoices folder (visible to user)
     if is_android:
-        common_bases = [
-            '/storage/emulated/0',
-            os.environ.get('EXTERNAL_STORAGE', ''),
-            '/sdcard',
-            '/storage/self/primary',
-        ]
-        
-        # Try Download/Invoices first (most visible)
-        for base in common_bases:
-            if not base or base == '':
+        for base in ['/storage/emulated/0', os.environ.get('EXTERNAL_STORAGE', ''), '/sdcard', '/storage/self/primary']:
+            if not base:
                 continue
-            p = Path(base) / 'Download' / 'Invoices'
-            if _is_writable_dir(p):
-                return p
-        
-        # Fallback: root-level Invoices folder
-        for base in common_bases:
-            if not base or base == '':
-                continue
-            p = Path(base) / 'Invoices'
-            if _is_writable_dir(p):
-                return p
-        
-        # Fallback to app-private storage (if external storage not accessible)
+            for sub in ['Download/Invoices', 'Invoices', 'Download']:
+                p = Path(base) / sub
+                if _is_writable_dir(p):
+                    return p
         for env_var in ['FLET_APP_STORAGE_DATA', 'ANDROID_APP_DATA', 'XDG_DATA_HOME']:
             app_dir = os.environ.get(env_var, '')
             if app_dir:
                 p = Path(app_dir) / 'Invoices'
                 if _is_writable_dir(p):
                     return p
-    
-    # Non-Android desktop: use home directory
-    if not is_android:
+    else:
         home_dir = os.environ.get("HOME") or os.path.expanduser("~")
         if home_dir and home_dir != "~":
             p = Path(home_dir) / 'Invoices'
             if _is_writable_dir(p):
                 return p
 
-    # Fallback for PyInstaller apps
-    if hasattr(sys, '_MEIPASS'):
-        home_dir = os.environ.get("HOME") or os.path.expanduser("~")
-        if home_dir and home_dir != "~":
-            p = Path(home_dir) / "Invoices"
-            if _is_writable_dir(p):
-                return p
-        p = Path(sys.executable).parent / "data" / "invoices"
-        if _is_writable_dir(p):
-            return p
-    else:
-        local_dir = Path(__file__).parent.parent / "data" / "invoices"
-        if _is_writable_dir(local_dir):
-            return local_dir
-
-    # Home directory fallback
-    home_dir = os.environ.get("HOME") or os.path.expanduser("~")
-    if home_dir and home_dir != "~":
-        p = Path(home_dir) / "Invoices"
-        if _is_writable_dir(p):
-            return p
-
-    # Last resort: temp directory
     import tempfile
-    p = Path(tempfile.gettempdir()) / "invoices"
+    p = Path(tempfile.gettempdir()) / "Invoices"
     p.mkdir(parents=True, exist_ok=True)
     return p
 
+
 def amount_in_words_inr(amount: float) -> str:
-    NUM_WORDS_1_TO_19 = [
-        "Zero", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine",
-        "Ten", "Eleven", "Twelve", "Thirteen", "Fourteen", "Fifteen", "Sixteen", "Seventeen",
-        "Eighteen", "Nineteen"
-    ]
-    TENS_WORDS = ["", "", "Twenty", "Thirty", "Forty", "Fifty", "Sixty", "Seventy", "Eighty", "Ninety"]
-
-    def _two_digit_words(n: int) -> str:
-        if n < 20: return NUM_WORDS_1_TO_19[n]
+    ones = ["Zero", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine", "Ten", "Eleven", "Twelve", "Thirteen", "Fourteen", "Fifteen", "Sixteen", "Seventeen", "Eighteen", "Nineteen"]
+    tens = ["", "", "Twenty", "Thirty", "Forty", "Fifty", "Sixty", "Seventy", "Eighty", "Ninety"]
+    def two(n: int) -> str:
+        if n < 20:
+            return ones[n]
         t, u = divmod(n, 10)
-        return TENS_WORDS[t] + (" " + NUM_WORDS_1_TO_19[u] if u else "")
-
+        return tens[t] + ((" " + ones[u]) if u else "")
     rupees = int(round(amount))
     paise = int(round((amount - int(amount)) * 100))
     parts = []
-    crore, rupees = divmod(rupees, 10_000_000)
-    lakh, rupees = divmod(rupees, 100_000)
+    crore, rupees = divmod(rupees, 10000000)
+    lakh, rupees = divmod(rupees, 100000)
     thousand, rupees = divmod(rupees, 1000)
     hundred, rupees = divmod(rupees, 100)
-    if crore:   parts.append(_two_digit_words(crore)   + " Crore")
-    if lakh:    parts.append(_two_digit_words(lakh)    + " Lakh")
-    if thousand:parts.append(_two_digit_words(thousand)+ " Thousand")
-    if hundred: parts.append(NUM_WORDS_1_TO_19[hundred]+ " Hundred")
-    if rupees:  parts.append(_two_digit_words(rupees))
+    if crore: parts.append(two(crore) + " Crore")
+    if lakh: parts.append(two(lakh) + " Lakh")
+    if thousand: parts.append(two(thousand) + " Thousand")
+    if hundred: parts.append(ones[hundred] + " Hundred")
+    if rupees: parts.append(two(rupees))
     words = " ".join(parts) if parts else "Zero"
     return f"Rupees {words} Only" if not paise else f"Rupees {words} and {paise} Paise Only"
 
+
 class InvoicePDF(FPDF):
     def footer(self):
-        # We handle footers explicitly in the generation loop, so pass
         pass
+
 
 def generate_pdf(invoice: Invoice, logo_path: Optional[str] = None, output_dir: str = "") -> str:
     out = get_output_dir(output_dir)
     out.mkdir(parents=True, exist_ok=True)
-
-    safe_invoice_number = (
-        invoice.invoice_number.replace('/', '-').replace('\\', '-').replace(':', '-')
-    )
+    safe_invoice_number = invoice.invoice_number.replace('/', '-').replace('\\', '-').replace(':', '-').strip()
     pdf_filename = f"{safe_invoice_number}.pdf"
     pdf_path = out / pdf_filename
 
-    # Rupee symbol is enabled below if a Unicode TTF font is available
-    rs = "Rs. "
-
-    # Subtotals
-    subtotal    = sum(it.total_price for it in invoice.line_items)
-    sgst        = sum(it.sgst_amount for it in invoice.line_items)
-    cgst        = sum(it.cgst_amount for it in invoice.line_items)
-    sgst_eff    = (sgst / subtotal * 100.0) if subtotal else 0.0
-    cgst_eff    = (cgst / subtotal * 100.0) if subtotal else 0.0
-    total       = subtotal + sgst + cgst
+    subtotal = sum(it.total_price for it in invoice.line_items)
+    sgst = sum(it.sgst_amount for it in invoice.line_items)
+    cgst = sum(it.cgst_amount for it in invoice.line_items)
+    sgst_eff = (sgst / subtotal * 100.0) if subtotal else 0.0
+    cgst_eff = (cgst / subtotal * 100.0) if subtotal else 0.0
+    total = subtotal + sgst + cgst
     round_total = float(decimal.Decimal(str(total)).quantize(decimal.Decimal('1'), rounding=decimal.ROUND_HALF_UP))
 
     pdf = InvoicePDF('P', 'mm', 'A4')
-    pdf.set_auto_page_break(auto=True, margin=15)
-    pdf.add_page()
     pdf.set_margins(8, 8, 8)
-    
-    page_w = pdf.w - 16  # total page width minus 8mm left and right margins
+    pdf.set_auto_page_break(auto=True, margin=10)
+    pdf.add_page()
+    page_w = pdf.w - 16
+    rs = "₹ "
 
-    # Unicode font setup for ₹ symbol and non-Latin safe text
-    unicode_font_enabled = False
     font_family = "Arial"
-    regular_font = Path(__file__).parent / "fonts" / "DejaVuSans.ttf"
-    bold_font = Path(__file__).parent / "fonts" / "DejaVuSans-Bold.ttf"
+    unicode_ok = False
     try:
-        configured_font = ConfigManager().get('font_path', '')
-        if configured_font:
-            regular_font = Path(configured_font)
+        cfg_font = ConfigManager().get('font_path', '')
     except Exception:
-        pass
+        cfg_font = ''
+    regular = Path(cfg_font) if cfg_font else Path(__file__).parent / "fonts" / "DejaVuSans.ttf"
+    bold = Path(__file__).parent / "fonts" / "DejaVuSans-Bold.ttf"
     try:
-        if regular_font.exists():
-            pdf.add_font('DejaVu', '', str(regular_font), uni=True)
-            if bold_font.exists():
-                pdf.add_font('DejaVu', 'B', str(bold_font), uni=True)
+        if regular.exists():
+            pdf.add_font('DejaVu', '', str(regular), uni=True)
+            if bold.exists():
+                pdf.add_font('DejaVu', 'B', str(bold), uni=True)
             font_family = 'DejaVu'
-            unicode_font_enabled = True
-            rs = "₹ "
+            unicode_ok = True
     except Exception:
         font_family = "Arial"
-        unicode_font_enabled = False
+        unicode_ok = False
         rs = "Rs. "
 
-    def set_pdf_font(style='', size=9):
+    def clean(t):
+        s = "" if t is None else str(t)
+        if unicode_ok:
+            return s
+        return s.encode('iso-8859-1', 'ignore').decode('iso-8859-1')
+    def set_font(style='', size=9):
         try:
             pdf.set_font(font_family, style, size)
         except Exception:
             pdf.set_font('Arial', style, size)
+    def fit_text(t: str, w: float, style='', size=8, min_size=6) -> str:
+        t = clean(t)
+        fs = size
+        set_font(style, fs)
+        while fs > min_size and pdf.get_string_width(t) > max(w - 1, 1):
+            fs -= 0.5
+            set_font(style, fs)
+        return t
+    def split_text(t: str, w: float, style='', size=8, max_lines=2) -> List[str]:
+        t = clean(t).replace('\r', ' ').replace('\n', ' ')
+        set_font(style, size)
+        words = t.split()
+        lines, cur = [], ""
+        for word in words:
+            test = word if not cur else cur + " " + word
+            if pdf.get_string_width(test) <= w - 2:
+                cur = test
+            else:
+                if cur:
+                    lines.append(cur)
+                cur = word
+                if len(lines) >= max_lines:
+                    break
+        if cur and len(lines) < max_lines:
+            lines.append(cur)
+        return lines or [""]
+    def label_value(x, y, label, value, label_w, value_w, size=8):
+        pdf.set_xy(x, y)
+        set_font('B', size)
+        pdf.cell(label_w, 4, clean(label), align='L')
+        set_font('', size)
+        pdf.cell(value_w, 4, fit_text(value, value_w, '', size), align='L')
 
-    def txt(t):
-        if not t:
-            return ""
-        s = str(t)
-        if unicode_font_enabled:
-            return s
-        return s.encode('iso-8859-1', 'ignore').decode('iso-8859-1')
+    x0 = 8
+    y = 8
 
-    # Draw header (increased height for better logo visibility)
-    set_pdf_font('B', 14)
-    # Tax Invoice text
-    pdf.cell(page_w * 0.75, 22, 'Tax Invoice', border=1, align='C')
-    # Logo Box
-    x_logo_box = pdf.get_x()
-    y_logo_box = pdf.get_y()
-    pdf.cell(page_w * 0.25, 22, '', border=1, ln=1, align='C')
-    
+    # Header
+    header_h = 22
+    title_w = page_w * 0.76
+    logo_w = page_w - title_w
+    pdf.rect(x0, y, title_w, header_h)
+    pdf.rect(x0 + title_w, y, logo_w, header_h)
+    set_font('B', 14)
+    pdf.set_xy(x0, y + 7)
+    pdf.cell(title_w, 8, 'Tax Invoice', align='C')
     if logo_path and os.path.exists(logo_path):
         try:
-            # fpdf handles jpg, png natively
-            pdf.image(logo_path, x=x_logo_box + 2, y=y_logo_box + 2, w=page_w * 0.25 - 4, h=18)
+            pdf.image(logo_path, x=x0 + title_w + 4, y=y + 3, w=logo_w - 8, h=16)
         except Exception:
             pass
+    y += header_h
 
-    # Meta
-    # Two columns:
-    col1_w = page_w / 2
-    col2_w = page_w / 2
-    
-    set_pdf_font('B', 9)
-    pdf.cell(28, 6, "Company Name:", border="L")
-    set_pdf_font('', 9)
-    pdf.cell(col1_w - 28, 6, txt(invoice.company_name))
-    
-    set_pdf_font('B', 9)
-    pdf.cell(28, 6, "Invoice No:", border="L")
-    set_pdf_font('', 9)
-    pdf.cell(col2_w - 28, 6, txt(invoice.invoice_number), border="R", ln=1)
-    
-    set_pdf_font('B', 9)
-    pdf.cell(28, 6, "ADDRESS:", border="L")
-    set_pdf_font('', 9)
-    pdf.cell(col1_w - 28, 6, txt(invoice.company_address))
-    
-    set_pdf_font('B', 9)
-    pdf.cell(28, 6, "Invoice Date:", border="L")
-    set_pdf_font('', 9)
-    pdf.cell(col2_w - 28, 6, txt(invoice.invoice_date), border="R", ln=1)
+    # Company/meta section
+    left_w = page_w / 2
+    right_w = page_w / 2
+    row_h = 5.7
+    rows = [
+        ('Company Name:', invoice.company_name, 'Invoice No:', invoice.invoice_number),
+        ('ADDRESS:', invoice.company_address, 'Invoice Date:', invoice.invoice_date),
+        ('GSTIN:', invoice.company_gstin, 'Po No:', invoice.po_number),
+        ('Phone:', invoice.company_phone, 'Po Date:', invoice.po_date),
+        ('Email:', invoice.company_email, 'Challan No:', invoice.challan_number),
+        ('UDYAM REG NO:', invoice.udyam_registration, 'Challan Date:', invoice.challan_date),
+    ]
+    meta_h = row_h * len(rows)
+    pdf.rect(x0, y, left_w, meta_h)
+    pdf.rect(x0 + left_w, y, right_w, meta_h)
+    for i, r in enumerate(rows):
+        yy = y + i * row_h + 0.9
+        label_value(x0 + 1, yy, r[0], r[1], 33, left_w - 36, 8)
+        label_value(x0 + left_w + 1, yy, r[2], r[3], 31, right_w - 34, 8)
+    y += meta_h + 2
 
-    left_labels = ['GSTIN:', 'Phone:', 'Email:', 'UDYAM REG NO:']
-    left_values = [invoice.company_gstin, invoice.company_phone, invoice.company_email, invoice.udyam_registration]
-    
-    right_fields = []
-    if invoice.po_number: right_fields.append(('Po No:', invoice.po_number))
-    if invoice.po_date: right_fields.append(('Po Date:', invoice.po_date))
-    if invoice.challan_number: right_fields.append(('Challan No:', invoice.challan_number))
-    if invoice.challan_date: right_fields.append(('Challan Date:', invoice.challan_date))
-
-    for i in range(len(left_labels)):
-        set_pdf_font('B', 9)
-        # We give a fixed width to label, then rest to value
-        pdf.cell(30, 6, left_labels[i], border="L")
-        set_pdf_font('', 9)
-        pdf.cell(col1_w - 30, 6, txt(left_values[i]))
-        
-        set_pdf_font('B', 9)
-        if i < len(right_fields):
-            pdf.cell(30, 6, right_fields[i][0], border="L")
-            set_pdf_font('', 9)
-            pdf.cell(col2_w - 30, 6, txt(right_fields[i][1]), border="R", ln=1)
-        else:
-            pdf.cell(30, 6, "", border="L")
-            pdf.cell(col2_w - 30, 6, "", border="R", ln=1)
-    
-    # Close border of meta box
-    pdf.cell(page_w, 0, "", border="T", ln=1)
-    
-    # Space
-    pdf.ln(2)
-    
-    # Additional Info
+    # Additional Info - full retained section
     line1 = getattr(invoice, 'additional_info_line1', '').strip()
     line2 = getattr(invoice, 'additional_info_line2', '').strip()
     if line1 or line2:
-        set_pdf_font('B', 9)
-        pdf.cell(page_w, 6, "Additional Information", border="LRT", ln=1)
-        set_pdf_font('', 9)
+        add_h = 6 + (5 if line1 else 0) + (5 if line2 else 0)
+        pdf.rect(x0, y, page_w, add_h)
+        set_font('B', 8)
+        pdf.set_xy(x0 + 1, y + 1)
+        pdf.cell(page_w - 2, 4, 'Additional Information')
+        set_font('', 8)
+        yy = y + 6
         if line1:
-            pdf.cell(page_w, 6, txt(line1), border="LR", ln=1)
+            pdf.set_xy(x0 + 1, yy)
+            pdf.cell(page_w - 2, 4, fit_text(line1, page_w - 2, '', 8))
+            yy += 5
         if line2:
-            pdf.cell(page_w, 6, txt(line2), border="LR", ln=1)
-        pdf.cell(page_w, 0, "", border="T", ln=1)
-        pdf.ln(2)
+            pdf.set_xy(x0 + 1, yy)
+            pdf.cell(page_w - 2, 4, fit_text(line2, page_w - 2, '', 8))
+        y += add_h + 2
 
-    # Customer Section
-    set_pdf_font('B', 9)
-    pdf.cell(col1_w, 6, "Invoice To", border="LRT")
-    pdf.cell(col2_w, 6, "Ship To", border="LRT", ln=1)
-    # Fixed label column so Name/Address/GSTIN values align like top section
-    label_w = 28
-    left_val_w = col1_w - label_w
-    right_val_w = col2_w - label_w
-    row_h2 = 6
-    # Name row
-    set_pdf_font('B', 9)
-    pdf.cell(label_w, row_h2, "Name:", border="L")
-    set_pdf_font('', 9)
-    pdf.cell(left_val_w, row_h2, txt(invoice.customer_name), border="R")
-    set_pdf_font('B', 9)
-    pdf.cell(label_w, row_h2, "Name:", border="L")
-    set_pdf_font('', 9)
-    pdf.cell(right_val_w, row_h2, txt(getattr(invoice, 'ship_to_name', '')), border="R", ln=1)
-    # Address row
-    set_pdf_font('B', 9)
-    pdf.cell(label_w, row_h2, "Address:", border="L")
-    set_pdf_font('', 9)
-    pdf.cell(left_val_w, row_h2, txt(invoice.customer_address), border="R")
-    set_pdf_font('B', 9)
-    pdf.cell(label_w, row_h2, "Address:", border="L")
-    set_pdf_font('', 9)
-    pdf.cell(right_val_w, row_h2, txt(getattr(invoice, 'ship_to_address', '')), border="R", ln=1)
-    # GSTIN row
-    set_pdf_font('B', 9)
-    pdf.cell(label_w, row_h2, "GSTIN:", border="LB")
-    set_pdf_font('', 9)
-    pdf.cell(left_val_w, row_h2, txt(invoice.customer_gstin or ''), border="RB")
-    set_pdf_font('B', 9)
-    pdf.cell(label_w, row_h2, "GSTIN:", border="LB")
-    set_pdf_font('', 9)
-    pdf.cell(right_val_w, row_h2, txt(getattr(invoice, 'ship_to_gstin', '') or ''), border="RB", ln=1)
-    pdf.ln(2)
+    # Invoice To / Ship To - aligned fixed label column
+    cust_h = 30
+    pdf.rect(x0, y, left_w, cust_h)
+    pdf.rect(x0 + left_w, y, right_w, cust_h)
+    set_font('B', 8)
+    pdf.set_xy(x0 + 1, y + 1)
+    pdf.cell(left_w - 2, 4, 'Invoice To')
+    pdf.set_xy(x0 + left_w + 1, y + 1)
+    pdf.cell(right_w - 2, 4, 'Ship To')
+    cust_label_w = 28
+    cust_value_w = left_w - cust_label_w - 3
+    ship_value_w = right_w - cust_label_w - 3
+    label_value(x0 + 1, y + 6, 'Name:', invoice.customer_name, cust_label_w, cust_value_w, 8)
+    label_value(x0 + left_w + 1, y + 6, 'Name:', getattr(invoice, 'ship_to_name', ''), cust_label_w, ship_value_w, 8)
+    label_value(x0 + 1, y + 11, 'Address:', '', cust_label_w, cust_value_w, 8)
+    set_font('', 8)
+    addr_lines = split_text(invoice.customer_address, cust_value_w, '', 8, 2)
+    for i, line in enumerate(addr_lines[:2]):
+        pdf.set_xy(x0 + 1 + cust_label_w, y + 11 + i * 4.5)
+        pdf.cell(cust_value_w, 4, fit_text(line, cust_value_w, '', 8))
+    label_value(x0 + left_w + 1, y + 11, 'Address:', '', cust_label_w, ship_value_w, 8)
+    set_font('', 8)
+    ship_lines = split_text(getattr(invoice, 'ship_to_address', ''), ship_value_w, '', 8, 2)
+    for i, line in enumerate(ship_lines[:2]):
+        pdf.set_xy(x0 + left_w + 1 + cust_label_w, y + 11 + i * 4.5)
+        pdf.cell(ship_value_w, 4, fit_text(line, ship_value_w, '', 8))
+    label_value(x0 + 1, y + 24, 'GSTIN:', invoice.customer_gstin, cust_label_w, cust_value_w, 8)
+    label_value(x0 + left_w + 1, y + 24, 'GSTIN:', getattr(invoice, 'ship_to_gstin', ''), cust_label_w, ship_value_w, 8)
+    y += cust_h + 2
 
-    # Items table header
-    pdf.set_fill_color(255, 255, 255)
-    pdf.set_text_color(0, 71, 171) # BLUE
-    set_pdf_font('B', 9)
-    
-    w_desc = page_w * (2.30/6.5)
-    w_hsn = page_w * (0.90/6.5)
-    w_qty = page_w * (0.70/6.5)
-    w_uom = page_w * (0.70/6.5)
-    w_unit = page_w * (0.95/6.5)
-    w_tot = page_w * (0.95/6.5)
-
-    pdf.cell(w_desc, 8, "Description", border=1, align='C', fill=True)
-    pdf.cell(w_hsn, 8, "HSN", border=1, align='C', fill=True)
-    pdf.cell(w_qty, 8, "Qty", border=1, align='C', fill=True)
-    pdf.cell(w_uom, 8, "UOM", border=1, align='C', fill=True)
-    pdf.cell(w_unit, 8, "Unit price", border=1, align='C', fill=True)
-    pdf.cell(w_tot, 8, "Total price", border=1, align='C', fill=True, ln=1)
-
-    # Items
+    # Items table
+    widths = [68, 27, 20, 20, 28, 31]
+    headers = ['Description', 'HSN', 'Qty', 'UOM', 'Unit price', 'Total price']
+    set_font('B', 8)
+    pdf.set_text_color(0, 71, 171)
+    pdf.set_xy(x0, y)
+    for w, hdr in zip(widths, headers):
+        pdf.cell(w, 7, hdr, border=1, align='C')
+    pdf.ln()
     pdf.set_text_color(0, 0, 0)
-    set_pdf_font('', 9)
+    set_font('', 8)
+    y = pdf.get_y()
     for it in invoice.line_items:
-        pdf.cell(w_desc, 6, txt(it.description), border="LR")
-        pdf.cell(w_hsn, 6, txt(it.hsn), border="LR", align="R")
-        pdf.cell(w_qty, 6, f"{it.qty:.2f}", border="LR", align="R")
-        pdf.cell(w_uom, 6, txt(it.uom), border="LR", align="R")
-        pdf.cell(w_unit, 6, f"{rs}{it.unit_price:.2f}", border="LR", align="R")
-        pdf.cell(w_tot, 6, f"{rs}{it.total_price:.2f}", border="LR", align="R", ln=1)
-    
-    # Close items table bottom border
-    pdf.cell(page_w, 0, "", border="T", ln=1)
-    
-    # Totals
-    w_tot_label = page_w * (4.5/6.5)
-    w_tot_val = page_w * (2.0/6.5)
+        pdf.set_xy(x0, y)
+        vals = [it.description, it.hsn, f"{it.qty:.2f}", it.uom, f"{rs}{it.unit_price:.2f}", f"{rs}{it.total_price:.2f}"]
+        aligns = ['L', 'R', 'R', 'R', 'R', 'R']
+        for w, val, al in zip(widths, vals, aligns):
+            pdf.cell(w, 6, fit_text(val, w, '', 8), border=1, align=al)
+        y += 6
+    pdf.set_y(y)
 
-    set_pdf_font('B', 9)
-    pdf.cell(w_tot_label, 6, "Subtotal", border="LRT")
-    pdf.cell(w_tot_val, 6, f"{rs}{subtotal:.2f}", border="LRT", align="R", ln=1)
-    
-    pdf.cell(w_tot_label, 6, f"SGST ({sgst_eff:.2f}%)", border="LR")
-    pdf.cell(w_tot_val, 6, f"{rs}{sgst:.2f}", border="LR", align="R", ln=1)
-    
-    pdf.cell(w_tot_label, 6, f"CGST ({cgst_eff:.2f}%)", border="LR")
-    pdf.cell(w_tot_val, 6, f"{rs}{cgst:.2f}", border="LR", align="R", ln=1)
-    
-    pdf.cell(w_tot_label, 6, "Total Amount in INR", border="LR")
-    pdf.cell(w_tot_val, 6, f"{rs}{total:.2f}", border="LR", align="R", ln=1)
-    
-    pdf.cell(w_tot_label, 6, "Total Amount in INR (Round off)", border="LRB")
-    pdf.cell(w_tot_val, 6, f"{rs}{round_total:.2f}", border="LRB", align="R", ln=1)
+    # Totals
+    label_w = sum(widths[:-1])
+    val_w = widths[-1]
+    totals = [
+        ('Subtotal', subtotal),
+        (f'SGST ({sgst_eff:.2f}%)', sgst),
+        (f'CGST ({cgst_eff:.2f}%)', cgst),
+        ('Total Amount in INR', total),
+        ('Total Amount in INR (Round off)', round_total),
+    ]
+    set_font('B', 8)
+    for lab, val in totals:
+        pdf.set_x(x0)
+        pdf.cell(label_w, 6, lab, border=1, align='L')
+        pdf.cell(val_w, 6, f"{rs}{val:.2f}", border=1, align='R', ln=1)
 
     # Amount in words
-    words_text = txt(amount_in_words_inr(round_total))
-    set_pdf_font('B', 9)
-    pdf.cell(40, 8, "Total Amount In Words :", border="LBT")
-    set_pdf_font('', 9)
-    pdf.cell(page_w - 40, 8, words_text, border="RBT", ln=1)
-    pdf.cell(page_w, 6, "", border="LRBT", ln=1)
-    
-    # Bank Details + Signatory
-    b_left_w = page_w * 4.3/6.5
-    b_right_w = page_w * 2.2/6.5
+    words_label_w = 50
+    set_font('B', 8)
+    pdf.set_x(x0)
+    pdf.cell(words_label_w, 8, 'Total Amount In Words :', border=1, align='L')
+    set_font('', 8)
+    pdf.cell(page_w - words_label_w, 8, ' ' + clean(amount_in_words_inr(round_total)), border=1, align='L', ln=1)
+    pdf.set_x(x0)
+    pdf.cell(page_w, 6, '', border=1, ln=1)
 
-    x_start = pdf.get_x()
-    y_start = pdf.get_y()
-
-    # Draw bank details text
-    set_pdf_font('B', 9)
-    pdf.cell(b_left_w, 6, "Bank Details", border="LRT", ln=2)
-    bank_label_w = 42
-    bank_val_w = b_left_w - bank_label_w
-    bank_rows = [
-        ("Account Holder Name:", getattr(invoice, 'bank_account_holder_name', '')),
-        ("Account number:", invoice.bank_account_number),
-        ("Branch Name:", invoice.bank_branch_name),
-        ("Branch IFSC:", invoice.bank_branch_ifsc),
-        ("Branch Address:", invoice.bank_branch_address),
+    # Bank details + signatory - full retained section
+    y = pdf.get_y()
+    bank_w = page_w * 0.66
+    sig_w = page_w - bank_w
+    bank_h = 40
+    pdf.rect(x0, y, bank_w, bank_h)
+    pdf.rect(x0 + bank_w, y, sig_w, bank_h)
+    set_font('B', 8)
+    pdf.set_xy(x0 + 1, y + 1)
+    pdf.cell(bank_w - 2, 4, 'Bank Details')
+    bank_fields = [
+        ('Account Holder Name:', getattr(invoice, 'bank_account_holder_name', '')),
+        ('Account number:', invoice.bank_account_number),
+        ('Branch Name:', invoice.bank_branch_name),
+        ('Branch IFSC:', invoice.bank_branch_ifsc),
+        ('Branch Address:', invoice.bank_branch_address),
+        ('PAN No:', invoice.pan_number),
     ]
-    for lab, val in bank_rows:
-        set_pdf_font('B', 9)
-        pdf.cell(bank_label_w, 6, txt(lab), border="L")
-        set_pdf_font('', 9)
-        pdf.cell(bank_val_w, 6, txt(val), border="R", ln=2)
-    set_pdf_font('B', 9)
-    pdf.cell(bank_label_w, 6, txt("PAN No:"), border="LB")
-    set_pdf_font('', 9)
-    pdf.cell(bank_val_w, 6, txt(invoice.pan_number), border="RB")
-    
-    # Move to right col for signatory
-    y_end = pdf.get_y()
-    pdf.set_xy(x_start + b_left_w, y_start)
-    
-    # Draw right column (signatory) bounding box
-    pdf.cell(b_right_w, 6, txt(f"For {invoice.company_name or 'Company'}"), border="LRT", align="C", ln=2)
-    # The height left is (y_end - y_start) - 6 + 6
-    h_left = (y_end - y_start) - 12
-    if h_left < 0: h_left = 12
-    pdf.cell(b_right_w, h_left, "", border="LR", ln=2)
-    set_pdf_font('', 9)
-    pdf.cell(b_right_w, 6, "Authorised Signatory", border="LRB", align="C")
+    labelw = 35
+    yy = y + 7
+    for lab, val in bank_fields:
+        label_value(x0 + 1, yy, lab, val, labelw, bank_w - labelw - 3, 8)
+        yy += 5
+    set_font('B', 8)
+    pdf.set_xy(x0 + bank_w, y + 1)
+    pdf.cell(sig_w, 5, fit_text(f"For {invoice.company_name or 'Company'}", sig_w, 'B', 8), align='C')
+    set_font('', 8)
+    pdf.set_xy(x0 + bank_w, y + bank_h - 8)
+    pdf.cell(sig_w, 5, 'Authorised Signatory', align='C')
+    y += bank_h
 
-    # Reset position
-    pdf.set_xy(x_start, y_end + 6)
-    
-    # Footer
-    set_pdf_font('B', 9)
-    pdf.cell(page_w, 6, "Declaration", border="LRT", ln=1)
-    set_pdf_font('', 9)
-    pdf.cell(page_w, 6, "We Declare that this invoice shows the actual price of the goods described", border="LR", ln=1)
-    pdf.cell(page_w, 6, "and that all the particulars are the true and correct.", border="LRB", ln=1)
-    
-    set_pdf_font('I', 8)
-    pdf.cell(page_w, 6, txt(invoice.jurisdiction_note), border=1, align="C", ln=1)
+    # Declaration - full retained section, one row + wraps if needed
+    dec_h = 14
+    pdf.rect(x0, y, page_w, dec_h)
+    set_font('B', 8)
+    pdf.set_xy(x0 + 1, y + 2)
+    pdf.cell(23, 4, 'Declaration:')
+    set_font('', 8)
+    declaration = 'We declare that this invoice shows the actual price of the goods described and that all particulars are true and correct.'
+    lines = split_text(declaration, page_w - 27, '', 8, 2)
+    for i, line in enumerate(lines):
+        pdf.set_xy(x0 + 25, y + 2 + i * 5)
+        pdf.cell(page_w - 27, 4, fit_text(line, page_w - 27, '', 8))
+    y += dec_h
 
-    # Try to save to the requested output directory
+    # Jurisdiction footer
+    set_font('I', 7)
+    pdf.set_xy(x0, y)
+    pdf.cell(page_w, 6, clean(invoice.jurisdiction_note), border=1, align='C')
+
     try:
         pdf.output(str(pdf_path))
-    except (PermissionError, OSError) as e:
-        # If write fails (e.g., permission error), use app-private storage as fallback
+    except (PermissionError, OSError):
         import tempfile
-        fallback_dir = Path(tempfile.gettempdir()) / "invoices"
+        fallback_dir = Path(tempfile.gettempdir()) / 'Invoices'
         fallback_dir.mkdir(parents=True, exist_ok=True)
         fallback_path = fallback_dir / pdf_filename
-        
-        try:
-            pdf.output(str(fallback_path))
-            pdf_path = fallback_path
-        except Exception as e2:
-            # Last resort: raise the original error
-            raise PermissionError(f"Failed to save PDF to {pdf_path}: {e}") from e
-    
+        pdf.output(str(fallback_path))
+        pdf_path = fallback_path
     return str(pdf_path)
