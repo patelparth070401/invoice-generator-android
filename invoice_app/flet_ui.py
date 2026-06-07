@@ -581,6 +581,16 @@ def main(page: ft.Page):
 
         def generate_pdf_action(e):
             try:
+                # Basic validations before generating invoice/PDF
+                if not (invoice_number.value or '').strip():
+                    raise ValueError('Invoice number required')
+                if not (invoice_date.value or '').strip():
+                    raise ValueError('Invoice date required')
+                if not (customer_name.value or '').strip():
+                    raise ValueError('Customer name required')
+                if not line_items:
+                    raise ValueError('Please add at least one line item')
+
                 inv = Invoice(
                     invoice_number=invoice_number.value,
                     invoice_date=invoice_date.value,
@@ -622,8 +632,8 @@ def main(page: ft.Page):
                 # Notify user
                 file_location = "Downloads/Invoices folder" if _is_android() else "storage"
                 page.snack_bar = ft.SnackBar(
-                    ft.Text(f"Invoice {inv.invoice_number} saved successfully!"),
-                    duration=4000
+                    ft.Text(f"Invoice {inv.invoice_number} saved successfully! Saved at: {pdf_path}"),
+                    duration=5000
                 )
                 page.snack_bar.open = True
                 
@@ -790,22 +800,24 @@ def main(page: ft.Page):
                 page.update()
                 return
 
-            # Ensure file is indexed by media scanner
-            _media_scan(pdf_path)
+            # Copy to shared storage if needed and use content:// URI on Android 7+
+            shared_path = _copy_to_shared_storage(pdf_path)
+            _media_scan(shared_path)
             
             import time
-            time.sleep(0.3)
+            time.sleep(0.5)
             
             sent = False
 
             if _is_android():
-                # Use file:// URI directly - files are in public Downloads folder
+                share_uri = _get_content_uri(shared_path) or f'file://{shared_path}'
                 sent = _am_start([
                     '-a', 'android.intent.action.SEND',
                     '-t', 'application/pdf',
                     '-p', 'com.whatsapp',
+                    '--grant-read-uri-permission',
                     '--es', 'android.intent.extra.TEXT', msg,
-                    '--eu', 'android.intent.extra.STREAM', f'file://{pdf_path}',
+                    '--eu', 'android.intent.extra.STREAM', share_uri,
                 ])
                 if sent:
                     page.snack_bar = ft.SnackBar(ft.Text("Opening WhatsApp with PDF..."))
@@ -815,9 +827,9 @@ def main(page: ft.Page):
 
             # If failed
             page.snack_bar = ft.SnackBar(
-                ft.Text("Failed to open WhatsApp. Please share manually.", color=ft.colors.WHITE),
+                ft.Text(f"Failed to open WhatsApp. PDF saved at: {shared_path}", color=ft.colors.WHITE),
                 bgcolor=ft.colors.RED,
-                duration=5000
+                duration=6000
             )
             page.snack_bar.open = True
             page.update()
@@ -825,11 +837,12 @@ def main(page: ft.Page):
         def _share_gmail(inv_num: str, customer: str, pdf_path: str):
             """Share invoice via Gmail with PDF attached."""
             subject = f"Invoice {inv_num}"
+            sender_name = (company_name.value or config.get('company_name', '') or 'Company').strip()
             body_text = (
                 f"Dear {customer},\n\n"
                 f"Please find invoice {inv_num} attached.\n\n"
                 "Regards,\n"
-                "Nitra Enterprises"
+                f"{sender_name}"
             )
 
             # Ensure we have a valid PDF
@@ -839,23 +852,25 @@ def main(page: ft.Page):
                 page.update()
                 return
 
-            # Ensure file is indexed by media scanner
-            _media_scan(pdf_path)
+            # Copy to shared storage if needed and use content:// URI on Android 7+
+            shared_path = _copy_to_shared_storage(pdf_path)
+            _media_scan(shared_path)
             
             import time
-            time.sleep(0.3)
+            time.sleep(0.5)
             
             sent = False
 
             if _is_android():
-                # Use file:// URI directly - files are in public Downloads folder
+                share_uri = _get_content_uri(shared_path) or f'file://{shared_path}'
                 sent = _am_start([
                     '-a', 'android.intent.action.SEND',
                     '-t', 'application/pdf',
                     '-p', 'com.google.android.gm',
+                    '--grant-read-uri-permission',
                     '--es', 'android.intent.extra.SUBJECT', subject,
                     '--es', 'android.intent.extra.TEXT', body_text,
-                    '--eu', 'android.intent.extra.STREAM', f'file://{pdf_path}',
+                    '--eu', 'android.intent.extra.STREAM', share_uri,
                 ])
                 if sent:
                     page.snack_bar = ft.SnackBar(ft.Text("Opening Gmail with PDF..."))
@@ -865,9 +880,9 @@ def main(page: ft.Page):
 
             # If failed
             page.snack_bar = ft.SnackBar(
-                ft.Text("Failed to open Gmail. Please share manually.", color=ft.colors.WHITE),
+                ft.Text(f"Failed to open Gmail. PDF saved at: {shared_path}", color=ft.colors.WHITE),
                 bgcolor=ft.colors.RED,
-                duration=5000
+                duration=6000
             )
             page.snack_bar.open = True
             page.update()

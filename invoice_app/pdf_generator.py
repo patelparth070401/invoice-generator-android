@@ -167,11 +167,11 @@ def generate_pdf(invoice: Invoice, logo_path: Optional[str] = None, output_dir: 
     # Draw header (increased height for better logo visibility)
     pdf.set_font('Arial', 'B', 14)
     # Tax Invoice text
-    pdf.cell(page_w * 0.75, 22, 'Tax Invoice', border=1, align='C', valign='M')
+    pdf.cell(page_w * 0.75, 22, 'Tax Invoice', border=1, align='C')
     # Logo Box
     x_logo_box = pdf.get_x()
     y_logo_box = pdf.get_y()
-    pdf.cell(page_w * 0.25, 22, '', border=1, ln=1, align='C', valign='M')
+    pdf.cell(page_w * 0.25, 22, '', border=1, ln=1, align='C')
     
     if logo_path and os.path.exists(logo_path):
         try:
@@ -357,7 +357,7 @@ def generate_pdf(invoice: Invoice, logo_path: Optional[str] = None, output_dir: 
     pdf.set_xy(x_start + b_left_w, y_start)
     
     # Draw right column (signatory) bounding box
-    pdf.cell(b_right_w, 6, "For NITRA ENTERPRISES", border="LRT", align="C", ln=2)
+    pdf.cell(b_right_w, 6, txt(f"For {invoice.company_name or 'Company'}"), border="LRT", align="C", ln=2)
     # The height left is (y_end - y_start) - 6 + 6
     h_left = (y_end - y_start) - 12
     if h_left < 0: h_left = 12
