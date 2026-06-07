@@ -159,26 +159,17 @@ def generate_pdf(invoice: Invoice, logo_path: Optional[str] = None, output_dir: 
     
     page_w = pdf.w - 16  # total page width minus 8mm left and right margins
 
-    # ---------------------------------------------------------
     # Unicode font setup for ₹ symbol and non-Latin safe text
-    # ---------------------------------------------------------
     unicode_font_enabled = False
     font_family = "Arial"
     try:
         configured_font = ConfigManager().get('font_path', '')
     except Exception:
         configured_font = ''
-
     bundled_regular = Path(__file__).parent / "fonts" / "DejaVuSans.ttf"
     bundled_bold = Path(__file__).parent / "fonts" / "DejaVuSans-Bold.ttf"
-    system_regular = Path('/usr/share/fonts/dejavu-sans-fonts/DejaVuSans.ttf')
-    system_bold = Path('/usr/share/fonts/dejavu-sans-fonts/DejaVuSans-Bold.ttf')
-
     regular_font = Path(configured_font) if configured_font else bundled_regular
-    if not regular_font.exists():
-        regular_font = system_regular
-    bold_font = bundled_bold if bundled_bold.exists() else system_bold
-
+    bold_font = bundled_bold
     if regular_font.exists():
         try:
             pdf.add_font('DejaVu', '', str(regular_font), uni=True)

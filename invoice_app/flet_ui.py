@@ -40,7 +40,9 @@ def _am_start(args: list) -> bool:
 
 
 def _get_content_uri(file_path: str) -> str:
-    """Return a shareable Android content:// URI for a public PDF."""
+    """Return a shareable URI for a public PDF.
+    First choice is MediaStore content:// URI. Last fallback is file://.
+    """
     if not _is_android() or not file_path or not os.path.exists(file_path):
         return ""
     try:
@@ -48,14 +50,10 @@ def _get_content_uri(file_path: str) -> str:
         import time
         time.sleep(0.8)
         escaped_path = file_path.replace("'", "''")
-        queries = [
-            ('content://media/external/downloads', f"_data='{escaped_path}'"),
-            ('content://media/external/file', f"_data='{escaped_path}'"),
-        ]
-        for uri_base, where_clause in queries:
+        for uri_base in ['content://media/external/downloads', 'content://media/external/file']:
             try:
                 result = subprocess.run(
-                    ['content', 'query', '--uri', uri_base, '--projection', '_id,_data', '--where', where_clause],
+                    ['content', 'query', '--uri', uri_base, '--projection', '_id,_data', '--where', f"_data='{escaped_path}'"],
                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10, text=True
                 )
                 output = (result.stdout or '') + chr(10) + (result.stderr or '')
@@ -69,6 +67,37 @@ def _get_content_uri(file_path: str) -> str:
     except Exception:
         pass
     return f"file://{file_path}"
+
+
+def _uri_candidates(file_path: str) -> list:
+    """URI candidates for Android open/share: MediaStore, DocumentsProvider, file fallback."""
+    candidates = []
+    try:
+        c = _get_content_uri(file_path)
+        if c:
+            candidates.append(c)
+    except Exception:
+        pass
+    try:
+        prefix = '/storage/emulated/0/'
+        if file_path.startswith(prefix):
+            rel = file_path[len(prefix):]
+            doc_id = 'primary:' + rel
+            candidates.append('content://com.android.externalstorage.documents/document/' + urllib.parse.quote(doc_id, safe=''))
+    except Exception:
+        pass
+    try:
+        candidates.append(f'file://{file_path}')
+    except Exception:
+        pass
+    seen = set()
+    uniq = []
+    for uri in candidates:
+        if uri and uri not in seen:
+            seen.add(uri)
+            uniq.append(uri)
+    return uniq
+
 
 def _is_writable_dir(d: str) -> bool:
     """Check if a directory is actually writable by creating a temporary file."""
@@ -547,6 +576,15 @@ def main(page: ft.Page):
 
         def generate_pdf_action(e):
             try:
+                if not (invoice_number.value or '').strip():
+                    raise ValueError('Invoice number required')
+                if not (invoice_date.value or '').strip():
+                    raise ValueError('Invoice date required')
+                if not (customer_name.value or '').strip():
+                    raise ValueError('Customer name required')
+                if not line_items:
+                    raise ValueError('Please add at least one line item')
+
                 inv = Invoice(
                     invoice_number=invoice_number.value,
                     invoice_date=invoice_date.value,
@@ -664,89 +702,37 @@ def main(page: ft.Page):
         history_list = ft.ListView(expand=True, spacing=10)
 
         def _open_pdf(pdf_path: str):
-            """Open the PDF with an external viewer."""
-            if not pdf_path:
-                page.snack_bar = ft.SnackBar(ft.Text("No PDF path provided."))
-                page.snack_bar.open = True
-                page.update()
-                return
-            
-            if not os.path.exists(pdf_path):
+            """Open the PDF with the user's default PDF viewer from History."""
+            if not pdf_path or not os.path.exists(pdf_path):
                 page.snack_bar = ft.SnackBar(ft.Text(f"PDF file not found: {pdf_path}"))
                 page.snack_bar.open = True
                 page.update()
                 return
-
-            # Copy to shared storage so external apps can access the file
             shared_path = _copy_to_shared_storage(pdf_path)
-            opened = False
-
+            _media_scan(shared_path)
             if _is_android():
-                # Ensure file is properly indexed and accessible
-                _media_scan(shared_path)
-                
                 import time
-                time.sleep(0.3)
-
-                # Primary: use content:// URI from MediaStore (required on Android 7+)
-                content_uri = _get_content_uri(shared_path)
-                if content_uri:
-                    opened = _am_start([
-                        '-a', 'android.intent.action.VIEW',
-                        '-d', content_uri,
-                        '-t', 'application/pdf',
-                        '--grant-read-uri-permission',
-                    ])
-                    if opened:
-                        page.snack_bar = ft.SnackBar(
-                            ft.Text(f"Opening PDF: {os.path.basename(shared_path)}"),
-                            duration=2000,
-                        )
+                time.sleep(0.8)
+                for uri in _uri_candidates(shared_path):
+                    if _am_start(['-a','android.intent.action.VIEW','-d',uri,'-t','application/pdf','--grant-read-uri-permission']):
+                        page.snack_bar = ft.SnackBar(ft.Text(f"Opening PDF: {os.path.basename(shared_path)}"), duration=2500)
                         page.snack_bar.open = True
                         page.update()
                         return
-
-                # Fallback 1: try file:// with am start (works on older Android)
-                if not opened:
-                    opened = _am_start([
-                        '-a', 'android.intent.action.VIEW',
-                        '-d', f'file://{shared_path}',
-                        '-t', 'application/pdf',
-                    ])
-                    if opened:
-                        page.snack_bar = ft.SnackBar(
-                            ft.Text(f"Opening PDF: {os.path.basename(shared_path)}"),
-                            duration=2000,
-                        )
-                        page.snack_bar.open = True
-                        page.update()
-                        return
-
-            # Fallback 2: Use Flet's launch_url with file:// (may work on some devices)
-            if not opened:
-                try:
-                    page.launch_url(f"file://{shared_path}")
-                    page.snack_bar = ft.SnackBar(
-                        ft.Text(f"Opening PDF: {os.path.basename(shared_path)}"),
-                        duration=2000,
-                    )
-                    page.snack_bar.open = True
-                    page.update()
-                    opened = True
-                except Exception as e:
-                    pass
-
-            # If still not opened, show the path to the user
-            if not opened:
-                page.snack_bar = ft.SnackBar(
-                    ft.Text(f"Could not open PDF. Saved at: {shared_path}", selectable=True),
-                    duration=5000,
-                )
+            try:
+                page.launch_url(f"file://{shared_path}")
+                page.snack_bar = ft.SnackBar(ft.Text(f"Opening PDF: {os.path.basename(shared_path)}"), duration=2500)
                 page.snack_bar.open = True
                 page.update()
+                return
+            except Exception:
+                pass
+            page.snack_bar = ft.SnackBar(ft.Text(f"Could not open PDF automatically. Saved at: {shared_path}", selectable=True), duration=7000)
+            page.snack_bar.open = True
+            page.update()
 
         async def _share_whatsapp(inv_num: str, pdf_path: str):
-            """Open WhatsApp/WhatsApp Business with invoice PDF attached."""
+            """Open WhatsApp/WhatsApp Business with invoice PDF attached from History."""
             msg = f"Invoice {inv_num}"
             if not pdf_path or not os.path.exists(pdf_path):
                 page.snack_bar = ft.SnackBar(ft.Text("PDF file not found."))
@@ -758,19 +744,20 @@ def main(page: ft.Page):
             if _is_android():
                 import time
                 time.sleep(0.8)
-                share_uri = _get_content_uri(shared_path)
-                for pkg in ["com.whatsapp", "com.whatsapp.w4b"]:
-                    if _am_start(['-a','android.intent.action.SEND','-t','application/pdf','-p',pkg,'--grant-read-uri-permission','--es','android.intent.extra.TEXT',msg,'--eu','android.intent.extra.STREAM',share_uri]):
-                        page.snack_bar = ft.SnackBar(ft.Text("Opening WhatsApp with attached PDF..."), duration=3000)
+                for uri in _uri_candidates(shared_path):
+                    for pkg in ['com.whatsapp', 'com.whatsapp.w4b']:
+                        if _am_start(['-a','android.intent.action.SEND','-t','application/pdf','-p',pkg,'--grant-read-uri-permission','--es','android.intent.extra.TEXT',msg,'--eu','android.intent.extra.STREAM',uri]):
+                            page.snack_bar = ft.SnackBar(ft.Text("Opening WhatsApp with attached PDF..."), duration=3000)
+                            page.snack_bar.open = True
+                            page.update()
+                            return
+                for uri in _uri_candidates(shared_path):
+                    if _am_start(['-a','android.intent.action.SEND','-t','application/pdf','--grant-read-uri-permission','--es','android.intent.extra.TEXT',msg,'--eu','android.intent.extra.STREAM',uri]):
+                        page.snack_bar = ft.SnackBar(ft.Text("Select WhatsApp from share sheet."), duration=4000)
                         page.snack_bar.open = True
                         page.update()
                         return
-                if _am_start(['-a','android.intent.action.SEND','-t','application/pdf','--grant-read-uri-permission','--es','android.intent.extra.TEXT',msg,'--eu','android.intent.extra.STREAM',share_uri]):
-                    page.snack_bar = ft.SnackBar(ft.Text("Select WhatsApp from share sheet."), duration=4000)
-                    page.snack_bar.open = True
-                    page.update()
-                    return
-            if share_service and hasattr(ft, "ShareFile"):
+            if share_service and hasattr(ft, 'ShareFile'):
                 try:
                     await share_service.share_files([ft.ShareFile.from_path(shared_path)], title="Share invoice", text=msg, subject=f"Invoice {inv_num}")
                     page.snack_bar = ft.SnackBar(ft.Text("Share sheet opened. Select WhatsApp."), duration=4000)
@@ -779,12 +766,12 @@ def main(page: ft.Page):
                     return
                 except Exception:
                     pass
-            page.snack_bar = ft.SnackBar(ft.Text(f"Could not open WhatsApp. PDF saved at: {shared_path}", color=ft.colors.WHITE), bgcolor=ft.colors.RED, duration=6000)
+            page.snack_bar = ft.SnackBar(ft.Text(f"Could not open WhatsApp. PDF saved at: {shared_path}", color=ft.colors.WHITE), bgcolor=ft.colors.RED, duration=7000)
             page.snack_bar.open = True
             page.update()
 
         async def _share_gmail(inv_num: str, customer: str, pdf_path: str):
-            """Open Gmail with invoice PDF attached."""
+            """Open Gmail with invoice PDF attached from History."""
             sender_name = (company_name.value or config.get('company_name', '') or 'Company').strip()
             subject = f"Invoice {inv_num}"
             body_text = f"Dear {customer},\n\nPlease find invoice {inv_num} attached.\n\nRegards,\n{sender_name}"
@@ -798,18 +785,19 @@ def main(page: ft.Page):
             if _is_android():
                 import time
                 time.sleep(0.8)
-                share_uri = _get_content_uri(shared_path)
-                if _am_start(['-a','android.intent.action.SEND','-t','application/pdf','-p','com.google.android.gm','--grant-read-uri-permission','--es','android.intent.extra.SUBJECT',subject,'--es','android.intent.extra.TEXT',body_text,'--eu','android.intent.extra.STREAM',share_uri]):
-                    page.snack_bar = ft.SnackBar(ft.Text("Opening Gmail with attached PDF..."), duration=3000)
-                    page.snack_bar.open = True
-                    page.update()
-                    return
-                if _am_start(['-a','android.intent.action.SEND','-t','application/pdf','--grant-read-uri-permission','--es','android.intent.extra.SUBJECT',subject,'--es','android.intent.extra.TEXT',body_text,'--eu','android.intent.extra.STREAM',share_uri]):
-                    page.snack_bar = ft.SnackBar(ft.Text("Select Gmail from share sheet."), duration=4000)
-                    page.snack_bar.open = True
-                    page.update()
-                    return
-            if share_service and hasattr(ft, "ShareFile"):
+                for uri in _uri_candidates(shared_path):
+                    if _am_start(['-a','android.intent.action.SEND','-t','application/pdf','-p','com.google.android.gm','--grant-read-uri-permission','--es','android.intent.extra.SUBJECT',subject,'--es','android.intent.extra.TEXT',body_text,'--eu','android.intent.extra.STREAM',uri]):
+                        page.snack_bar = ft.SnackBar(ft.Text("Opening Gmail with attached PDF..."), duration=3000)
+                        page.snack_bar.open = True
+                        page.update()
+                        return
+                for uri in _uri_candidates(shared_path):
+                    if _am_start(['-a','android.intent.action.SEND','-t','application/pdf','--grant-read-uri-permission','--es','android.intent.extra.SUBJECT',subject,'--es','android.intent.extra.TEXT',body_text,'--eu','android.intent.extra.STREAM',uri]):
+                        page.snack_bar = ft.SnackBar(ft.Text("Select Gmail from share sheet."), duration=4000)
+                        page.snack_bar.open = True
+                        page.update()
+                        return
+            if share_service and hasattr(ft, 'ShareFile'):
                 try:
                     await share_service.share_files([ft.ShareFile.from_path(shared_path)], title="Email invoice", text=body_text, subject=subject)
                     page.snack_bar = ft.SnackBar(ft.Text("Share sheet opened. Select Gmail."), duration=4000)
@@ -818,7 +806,7 @@ def main(page: ft.Page):
                     return
                 except Exception:
                     pass
-            page.snack_bar = ft.SnackBar(ft.Text(f"Could not open Gmail. PDF saved at: {shared_path}", color=ft.colors.WHITE), bgcolor=ft.colors.RED, duration=6000)
+            page.snack_bar = ft.SnackBar(ft.Text(f"Could not open Gmail. PDF saved at: {shared_path}", color=ft.colors.WHITE), bgcolor=ft.colors.RED, duration=7000)
             page.snack_bar.open = True
             page.update()
 
