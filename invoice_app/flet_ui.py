@@ -527,7 +527,7 @@ def main(page: ft.Page):
                             content=ft.Row([
                                 ft.Column([
                                     ft.Text(item.description, weight=ft.FontWeight.BOLD),
-                                    ft.Text(f"Qty: {item.qty} | Price: Rs. {item.unit_price} | Total: Rs. {item.total_price}")
+                                    ft.Text(f"Qty: {item.qty} | UOM: {item.uom} | Price: Rs. {item.unit_price} | Total: Rs. {item.total_price}")
                                 ], expand=True),
                                 ft.IconButton(icon=ft.icons.DELETE, icon_color="red", on_click=lambda e, idx=i: remove_item(idx))
                             ])
@@ -554,7 +554,7 @@ def main(page: ft.Page):
                     description=add_desc.value,
                     hsn=add_hsn.value,
                     qty=float(add_qty.value),
-                    uom="NOS",
+                    uom=add_uom.value,
                     unit_price=float(add_price.value),
                     sgst_rate=float(add_sgst.value),
                     cgst_rate=float(add_cgst.value)
@@ -569,7 +569,7 @@ def main(page: ft.Page):
         add_item_dialog = ft.AlertDialog(
             title=ft.Text("Add Line Item"),
             content=ft.Column([
-                add_desc, add_hsn, add_qty, add_price, add_sgst, add_cgst
+                add_desc, add_hsn, add_qty, add_uom, add_price, add_sgst, add_cgst
             ], scroll=ft.ScrollMode.AUTO, height=400),
             actions=[
                 ft.TextButton("Add", on_click=dlg_add_item_click),
