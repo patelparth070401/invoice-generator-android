@@ -298,6 +298,7 @@ def main(page: ft.Page):
         company_gstin = ft.TextField(label="GSTIN", value=config.get('company_gstin', ''))
         company_phone = ft.TextField(label="Phone", value=config.get('company_phone', ''))
         company_email = ft.TextField(label="Email", value=config.get('company_email', ''))
+        udyam_registration = ft.TextField(label="UDYAM Registration No", value=config.get('udyam_registration', ''))
         pan_number = ft.TextField(label="PAN No", value=config.get('pan_number', ''))
         
         bank_acc_name = ft.TextField(label="Account Holder Name", value=config.get('bank_account_holder_name', ''))
@@ -356,6 +357,7 @@ def main(page: ft.Page):
             config.set('company_gstin', company_gstin.value)
             config.set('company_phone', company_phone.value)
             config.set('company_email', company_email.value)
+            config.set('udyam_registration', udyam_registration.value)
             config.set('pan_number', pan_number.value)
             config.set('bank_account_holder_name', bank_acc_name.value)
             config.set('bank_account_number', bank_acc_no.value)
@@ -402,7 +404,7 @@ def main(page: ft.Page):
                 padding=10,
                 controls=[
                     ft.Text("Company Details", size=18, weight=ft.FontWeight.BOLD),
-                    company_name, company_address, company_gstin, pan_number, company_phone, company_email,
+                    company_name, company_address, company_gstin, udyam_registration, pan_number, company_phone, company_email,
                     ft.Divider(),
                     ft.Text("Bank Details", size=18, weight=ft.FontWeight.BOLD),
                     bank_acc_name, bank_acc_no, bank_branch, bank_ifsc, bank_address,
@@ -593,6 +595,7 @@ def main(page: ft.Page):
                     company_gstin=company_gstin.value,
                     company_phone=company_phone.value,
                     company_email=company_email.value,
+                    udyam_registration=udyam_registration.value,
                     pan_number=pan_number.value,
                     customer_name=customer_name.value,
                     customer_address=customer_address.value,
@@ -731,12 +734,20 @@ def main(page: ft.Page):
             opened = False
             if _is_android():
                 try:
+                    candidates = []
                     if folder.startswith('/storage/emulated/0/'):
-                        rel = folder[len('/storage/emulated/0/'):]
-                        doc_uri = 'content://com.android.externalstorage.documents/document/' + urllib.parse.quote('primary:' + rel, safe='')
-                        opened = _am_start(['-a', 'android.intent.action.VIEW', '-d', doc_uri, '--grant-read-uri-permission'])
-                    if not opened:
-                        opened = _am_start(['-a', 'android.intent.action.VIEW', '-d', f'file://{folder}'])
+                        rel = folder[len('/storage/emulated/0/'):].strip('/')
+                        encoded_doc_id = urllib.parse.quote('primary:' + rel, safe='')
+                        candidates.append(['-a','android.intent.action.VIEW','-d',f'content://com.android.externalstorage.documents/document/{encoded_doc_id}','--grant-read-uri-permission'])
+                        candidates.append(['-a','android.intent.action.VIEW','-d','content://com.android.externalstorage.documents/root/primary','--grant-read-uri-permission'])
+                    candidates.extend([
+                        ['-a','android.intent.action.VIEW','-d',f'file://{folder}','-t','resource/folder'],
+                        ['-a','android.intent.action.VIEW','-d',f'file://{folder}'],
+                    ])
+                    for args in candidates:
+                        if _am_start(args):
+                            opened = True
+                            break
                 except Exception:
                     opened = False
             if not opened:
@@ -746,7 +757,7 @@ def main(page: ft.Page):
                 except Exception:
                     opened = False
             msg = f"Opening folder: {folder}" if opened else f"Could not open folder automatically. Saved folder: {folder}"
-            page.snack_bar = ft.SnackBar(ft.Text(msg, selectable=True), duration=7000)
+            page.snack_bar = ft.SnackBar(ft.Text(msg, selectable=True), duration=8000)
             page.snack_bar.open = True
             page.update()
 
