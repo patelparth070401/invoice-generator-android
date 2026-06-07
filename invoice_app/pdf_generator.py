@@ -322,7 +322,7 @@ def generate_pdf(invoice: Invoice, logo_path: Optional[str] = None, output_dir: 
         ('Branch Address:', invoice.bank_branch_address),
         ('PAN No:', invoice.pan_number),
     ]
-    labelw = 35
+    labelw = 42
     yy = y + 7
     for lab, val in bank_fields:
         label_value(x0 + 1, yy, lab, val, labelw, bank_w - labelw - 3, 8)
