@@ -3,6 +3,7 @@ flet_env/
 bin/
 __pycache__/
 *.pyc
+*.pyo
 data/
 *.exe
 gh.zip
