@@ -703,13 +703,13 @@ def main(page: ft.Page):
                 page.snack_bar = ft.SnackBar(ft.Text("No PDF path provided."))
                 page.snack_bar.open = True
                 page.update()
-                return
+                return False
             
             if not os.path.exists(pdf_path):
                 page.snack_bar = ft.SnackBar(ft.Text(f"PDF file not found: {pdf_path}"))
                 page.snack_bar.open = True
                 page.update()
-                return
+                return False
 
             # Copy to shared storage so external apps can access the file
             shared_path = _copy_to_shared_storage(pdf_path)
@@ -738,7 +738,7 @@ def main(page: ft.Page):
                         )
                         page.snack_bar.open = True
                         page.update()
-                        return
+                        return True
 
                 # Fallback 1: try file:// with am start (works on older Android)
                 if not opened:
@@ -754,7 +754,7 @@ def main(page: ft.Page):
                         )
                         page.snack_bar.open = True
                         page.update()
-                        return
+                        return True
 
             # Fallback 2: Use Flet's launch_url with file:// (may work on some devices)
             if not opened:
@@ -778,6 +778,7 @@ def main(page: ft.Page):
                 )
                 page.snack_bar.open = True
                 page.update()
+            return opened
 
         def _share_whatsapp(inv_num: str, pdf_path: str):
             """Share invoice via WhatsApp with PDF attached."""
@@ -956,89 +957,23 @@ def main(page: ft.Page):
         )
 
         # ---------------------------------------------------------
-        # FIRST-RUN: Ask user to choose PDF save directory (once)
+        # FIRST-RUN: auto-configure PDF save directory (no prompt)
         # ---------------------------------------------------------
         def _ensure_pdf_dir():
-            """On first run, prompt user to pick a PDF save folder.
-            Called after the full UI is built so dialogs can display."""
+            """Ensure a valid PDF save folder is configured."""
             saved_dir = config.get('pdf_output_dir', '')
-            if saved_dir:
-                # Already configured – nothing to do
-                return
-
-            # FilePicker for first-run directory selection
-            def on_first_dir_result(e: ft.FilePickerResultEvent):
-                if e.path:
-                    chosen = e.path
-                    # Handle Android SAF URIs
-                    if chosen.startswith('content://'):
-                        if 'primary:' in chosen:
-                            suffix = chosen.split('primary:')[-1]
-                            suffix = urllib.parse.unquote(suffix)
-                            chosen = os.path.join('/storage/emulated/0', suffix)
-                        else:
-                            chosen = _default_pdf_dir()
-                    # Validate writability
-                    if not _is_writable_dir(chosen):
-                        chosen = _default_pdf_dir()
-                else:
-                    # User cancelled → use a sensible default
-                    chosen = _default_pdf_dir()
-                config.set('pdf_output_dir', chosen)
-                config.save()
-                pdf_dir_field.value = chosen
-                try:
-                    os.makedirs(chosen, exist_ok=True)
-                except OSError:
-                    pass
-                # Close the dialog
-                if page.dialog:
-                    page.dialog.open = False
-                page.snack_bar = ft.SnackBar(
-                    ft.Text(f"PDFs will be saved to: {chosen}"),
-                    duration=4000,
-                )
-                page.snack_bar.open = True
-                page.update()
-
-            first_picker = ft.FilePicker(on_result=on_first_dir_result)
-            page.overlay.append(first_picker)
-
-            def _pick_dir(e):
-                first_picker.get_directory_path(dialog_title="Choose PDF Save Folder")
-
-            def _use_default(e):
+            if saved_dir and _is_writable_dir(saved_dir):
+                chosen = saved_dir
+            else:
                 chosen = _default_pdf_dir()
                 config.set('pdf_output_dir', chosen)
                 config.save()
-                pdf_dir_field.value = chosen
-                try:
-                    os.makedirs(chosen, exist_ok=True)
-                except OSError:
-                    pass
-                page.dialog.open = False
-                page.snack_bar = ft.SnackBar(
-                    ft.Text(f"PDFs will be saved to: {chosen}"),
-                    duration=4000,
-                )
-                page.snack_bar.open = True
-                page.update()
 
-            dlg = ft.AlertDialog(
-                modal=True,
-                title=ft.Text("Choose PDF Save Location"),
-                content=ft.Text(
-                    "Please choose a folder where your invoice PDFs will be saved.\n\n"
-                    "You can change this later in Settings."
-                ),
-                actions=[
-                    ft.TextButton("Choose Folder", on_click=_pick_dir),
-                    ft.TextButton("Use Default", on_click=_use_default),
-                ],
-            )
-            page.dialog = dlg
-            dlg.open = True
-            page.update()
+            pdf_dir_field.value = chosen
+            try:
+                os.makedirs(chosen, exist_ok=True)
+            except OSError:
+                pass
 
         # ---------------------------------------------------------
         # MAIN LAYOUT

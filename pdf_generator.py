@@ -414,10 +414,13 @@ def generate_pdf(invoice: Invoice, logo_path: Optional[str] = None, output_dir: 
         ('Branch Address:', invoice.bank_branch_address),
         ('PAN No:', invoice.pan_number),
     ]
-    # Calculate bank block height.
-    label_w = 42
+    # Calculate bank block height using the same sizing as draw_label_value_rows.
+    label_w = min(34, bank_w * 0.36)
     value_w = bank_w - label_w
-    bank_h = 6 + sum(row_height([(lab, label_w, 'B', 8), (val, value_w, '', 8)], min_h=5.8, line_h=4.0, pad=3.2) for lab, val in bank_rows)
+    bank_h = 6 + sum(
+        row_height([(lab, label_w, 'B', 8), (val, value_w, '', 8)], min_h=6, line_h=4.2, pad=3.4)
+        for lab, val in bank_rows
+    )
     bank_h = max(bank_h, 38)
     ensure_space(bank_h)
     y = pdf.get_y()
